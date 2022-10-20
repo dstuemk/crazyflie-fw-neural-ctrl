@@ -35,7 +35,6 @@
 #include "motors.h"
 #include "debug.h"
 #include "neural_control.h"
-#include "remote_control.h"
 
 static bool motorSetEnable = false;
 
@@ -116,7 +115,6 @@ void powerDistribution(const control_t *control)
 {
   
   neuralControlTaskPeekPwmBypass(&pwmBypass);
-  remoteControlTaskPeekPwmBypass(&pwmBypass);
   if(!pwmBypass)
   {
     #ifdef QUAD_FORMATION_X

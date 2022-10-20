@@ -54,8 +54,6 @@
 #include "static_mem.h"
 #include "rateSupervisor.h"
 #include "neural_control.h"
-//#include "neural_net.h"
-#include "remote_control.h"
 
 static bool isInit;
 static bool emergencyStop = false;
@@ -290,7 +288,6 @@ static void stabilizerTask(void* param)
 
       //give kalman-state-estimation to neural_control:
       neuralControlTaskEnqueueState(state);
-      remoteControlTaskEnqueueState(state);
 
       commanderGetSetpoint(&setpoint, &state);
       compressSetpoint();

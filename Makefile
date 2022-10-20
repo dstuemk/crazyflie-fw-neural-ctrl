@@ -171,16 +171,13 @@ PROJ_OBJ += system.o comm.o console.o pid.o crtpservice.o param.o
 PROJ_OBJ += log.o worker.o trigger.o sitaw.o queuemonitor.o msp.o
 PROJ_OBJ += platformservice.o sound_cf2.o extrx.o sysload.o mem.o
 PROJ_OBJ += range.o app_handler.o static_mem.o app_channel.o
-#PROJ_OBJ += neural_net.o
 PROJ_OBJ += logRingBuffer.o
-#PROJ_OBJ += neural_com.o
 PROJ_OBJ += neural_control.o
-PROJ_OBJ += remote_control.o
 
 # keras2c
-PROJ_OBJ += neural_forward.o
-PROJ_OBJ += neural_recurrent.o
-PROJ_OBJ += neural_cascaded.o
+#PROJ_OBJ += neural_forward.o
+#PROJ_OBJ += neural_recurrent.o
+#PROJ_OBJ += neural_cascaded.o
 
 # Stabilizer modules
 PROJ_OBJ += commander.o crtp_commander.o crtp_commander_rpyt.o

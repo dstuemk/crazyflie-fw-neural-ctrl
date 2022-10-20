@@ -16,10 +16,15 @@
 #include "neural_recurrent.h"
 #include "neural_cascaded.h"
 
+#include "neural_forward.c"
+#include "neural_recurrent.c"
+#include "neural_cascaded.c"
+
 #define max(a,b)            (((a) > (b)) ? (a) : (b))
 #define min(a,b)            (((a) < (b)) ? (a) : (b))
 
 static const float deg2rad = 2 * M_PI / 360;
+static const float G = 9.81;
 
 typedef struct {
     float16_t x;
@@ -41,6 +46,9 @@ typedef struct {
     float16_t gyro_x;   // Added by Sven (Raw Gyro sensor values)
     float16_t gyro_y;   // Added by Sven (Raw Gyro sensor values)
     float16_t gyro_z;   // Added by Sven (Raw Gyro sensor values)
+    float16_t acc_x;    // Added by Daniel (Acc values)
+    float16_t acc_y;    // Added by Daniel (Acc values)
+    float16_t acc_z;    // Added by Daniel (Acc values)
     // R1 - R9: Added (04.08.2021) by Sven to make state identical to USC paper (Molchanov et al.)
     //float16_t R1;
     //float16_t R2;
@@ -610,6 +618,11 @@ static void neuralCreateDroneState(state_t *kalmanState, float16_t* lastAction, 
   droneState->y_dot = (float16_t)kalmanState->velocity.y;
   droneState->z_dot = (float16_t)kalmanState->velocity.z;
 
+  // accelerations
+  droneState->acc_x = (float16_t)(kalmanState->acc.x * G);
+  droneState->acc_y = (float16_t)(kalmanState->acc.y * G);
+  droneState->acc_z = (float16_t)(kalmanState->acc.z * G);
+
   // rpy in radian not degree; p inverted:
   droneState->roll  = (float16_t)(kalmanState->attitude.roll * deg2rad);
   droneState->pitch = (float16_t)(-kalmanState->attitude.pitch * deg2rad);
@@ -791,7 +804,9 @@ static void neuralControlTask(void *params) {
             case NEURALCONTROL_CIRCLING:
                 neuralSendDroneState(droneState);
                 circleIt = it_count - circleStartIt - 1;
+                // Update goal position every 250ms
                 if (circleIt % 25 == 0) {
+                    // Use future setpoint to compensate the slow PID position-control
                     new_setpoint = neuralCircleSetpoint((circleIt / 25 + 2)*25);
                     commanderSetSetpoint(&new_setpoint, 5);
                 }

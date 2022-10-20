@@ -69,9 +69,7 @@
 #include "static_mem.h"
 #include "peer_localization.h"
 #include "cfassert.h"
-//#include "neural_com.h"
 #include "neural_control.h"
-#include "remote_control.h"
 
 #ifndef START_DISARMED
 #define ARM_INIT true
@@ -139,9 +137,7 @@ void systemInit(void)
   pmInit();
   buzzerInit();
   peerLocalizationInit();
-  //neuralComTaskInit();
   neuralControlTaskInit();
-  remoteControlTaskInit();
 
 #ifdef APP_ENABLED
   appInit();
@@ -218,7 +214,6 @@ void systemTask(void *arg)
   pass &= peerLocalizationTest();
   //pass &= neuralComTaskTest();
   pass &= neuralControlTaskTest();
-  pass &= remoteControlTaskTest();
 
   //Start the firmware
   if(pass)
