@@ -244,25 +244,25 @@ static const char *neuralcontrol_layer_names[3][16] = {
 
 #define NEURALCONTROL_NET_MAX_H 5
 
-static float16_t neuralcontrol_net_input[20*NEURALCONTROL_NET_MAX_H] = {0};
+static float16_t neuralcontrol_net_input[14*NEURALCONTROL_NET_MAX_H] = {0};
 static int neuralcontrol_net_H = 0;
 static k2c_tensor neuralcontrol_ff_input = { 0 };
 static k2c_tensor neuralcontrol_rnn_input = { 0 };
 
 static void neuralControlInitNet() {
-    neuralcontrol_net_H = neural_forward_input_shapes[0][2] / 20;
+    neuralcontrol_net_H = neural_forward_input_shapes[0][2] / 14;
     k2c_tensor _neuralcontrol_ff_input = {
         &neuralcontrol_net_input[0],
         2,
-        20*neuralcontrol_net_H,
-        { 1,20*neuralcontrol_net_H, 1, 1, 1}
+        14*neuralcontrol_net_H,
+        { 1,14*neuralcontrol_net_H, 1, 1, 1}
     };
     neuralcontrol_ff_input = _neuralcontrol_ff_input;
     k2c_tensor _neuralcontrol_rnn_input = {
-        &neuralcontrol_net_input[20*(neuralcontrol_net_H - 1)],
+        &neuralcontrol_net_input[14*(neuralcontrol_net_H - 1)],
         2,
-        20,
-        { 1,20, 1, 1, 1}
+        14,
+        { 1,14, 1, 1, 1}
     };
     neuralcontrol_rnn_input = _neuralcontrol_rnn_input;
 
@@ -270,34 +270,28 @@ static void neuralControlInitNet() {
 }
 
 static void neuralControlUpdateNetInput(neural_drone_state_t droneState, uint32_t netStartTicks) {
-    uint16_t offset = (neuralcontrol_net_H - 1) * 20;
+    uint16_t offset = (neuralcontrol_net_H - 1) * 14;
     memmove(&neuralcontrol_net_input[0], 
-      &neuralcontrol_net_input[20], 
-      sizeof(neuralcontrol_net_input) - 20*sizeof(float16_t));
-    neuralcontrol_net_input[0 + offset] = droneState.x;
-    neuralcontrol_net_input[1 + offset] = droneState.y;
-    neuralcontrol_net_input[2 + offset] = droneState.z;
-    neuralcontrol_net_input[3 + offset] = droneState.quaternion_a;
-    neuralcontrol_net_input[4 + offset] = droneState.quaternion_b;
-    neuralcontrol_net_input[5 + offset] = droneState.quaternion_c;
-    neuralcontrol_net_input[6 + offset] = droneState.quaternion_d;
-    neuralcontrol_net_input[7 + offset] = droneState.x_dot;
-    neuralcontrol_net_input[8 + offset] = droneState.y_dot;
-    neuralcontrol_net_input[9 + offset] = droneState.z_dot;
-    neuralcontrol_net_input[10 + offset] = droneState.roll_dot;
-    neuralcontrol_net_input[11 + offset] = droneState.pitch_dot;
-    neuralcontrol_net_input[12 + offset] = droneState.yaw_dot;
+      &neuralcontrol_net_input[14], 
+      sizeof(neuralcontrol_net_input) - 14*sizeof(float16_t));
+    neuralcontrol_net_input[0 + offset] = droneState.z;
+    neuralcontrol_net_input[1 + offset] = droneState.acc_x;
+    neuralcontrol_net_input[2 + offset] = droneState.acc_y;
+    neuralcontrol_net_input[3 + offset] = droneState.acc_z;
+    neuralcontrol_net_input[4 + offset] = droneState.roll_dot;
+    neuralcontrol_net_input[5 + offset] = droneState.pitch_dot;
+    neuralcontrol_net_input[6 + offset] = droneState.yaw_dot;
 
     float netTime = (float)(xTaskGetTickCount() - netStartTicks) / (float)M2T(1000);
     float alpha = 2.0f * (float)M_PI / 3.0f;
-    neuralcontrol_net_input[13 + offset] = 0.25f * (float)(1.0 - cos(netTime * alpha)) - droneState.x;
-    neuralcontrol_net_input[14 + offset] = 0.25f * (float)sin(netTime * alpha) - droneState.y;
-    neuralcontrol_net_input[15 + offset] = 1.0f - droneState.z;
+    neuralcontrol_net_input[7 + offset] = 0.25f * (float)(1.0 - cos(netTime * alpha)) - droneState.x;
+    neuralcontrol_net_input[8 + offset] = 0.25f * (float)sin(netTime * alpha) - droneState.y;
+    neuralcontrol_net_input[9 + offset] = 1.0f - droneState.z;
     
-    neuralcontrol_net_input[16 + offset] = droneState.M1; 
-    neuralcontrol_net_input[17 + offset] = droneState.M2; 
-    neuralcontrol_net_input[18 + offset] = droneState.M3; 
-    neuralcontrol_net_input[19 + offset] = droneState.M4; 
+    neuralcontrol_net_input[10 + offset] = droneState.M1; 
+    neuralcontrol_net_input[11 + offset] = droneState.M2; 
+    neuralcontrol_net_input[12 + offset] = droneState.M3; 
+    neuralcontrol_net_input[13 + offset] = droneState.M4; 
 }
 
 static NEURALCONTROL_NET neuralcontrol_current_net = NEURALCONTROL_NET_NONE;

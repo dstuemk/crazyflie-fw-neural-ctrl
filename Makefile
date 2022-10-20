@@ -393,9 +393,9 @@ build:
 		rm -f neural_forward*; \
 		rm -f neural_recurrent*; \
 		rm -f neural_cascaded*; \
-		$(PYTHON) -m keras2c --dtype _Float16 -m $(CRAZYFLIE_BASE)/models/state/forward.h5 neural_forward; \
-		$(PYTHON) -m keras2c --dtype _Float16 -m $(CRAZYFLIE_BASE)/models/state/recurrent.h5 neural_recurrent; \
-		$(PYTHON) -m keras2c --dtype _Float16 -m $(CRAZYFLIE_BASE)/models/state/cascaded.h5 neural_cascaded; 
+		$(PYTHON) -m keras2c --dtype _Float16 -m $(CRAZYFLIE_BASE)/models/sensor/forward.h5 neural_forward; \
+		$(PYTHON) -m keras2c --dtype _Float16 -m $(CRAZYFLIE_BASE)/models/sensor/recurrent.h5 neural_recurrent; \
+		$(PYTHON) -m keras2c --dtype _Float16 -m $(CRAZYFLIE_BASE)/models/sensor/cascaded.h5 neural_cascaded; 
 	@$(MAKE) --no-print-directory clean_version CRAZYFLIE_BASE=$(CRAZYFLIE_BASE)
 	@$(MAKE) --no-print-directory compile CRAZYFLIE_BASE=$(CRAZYFLIE_BASE)
 	@$(MAKE) --no-print-directory print_version CRAZYFLIE_BASE=$(CRAZYFLIE_BASE)
