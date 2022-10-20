@@ -51,10 +51,6 @@
 #include "bmp3.h"
 #include "bstdr_types.h"
 #include "static_mem.h"
-#include "estimator.h"
-
-#include "sensors_bmi088_common.h"
-#include "platform_defaults.h"
 
 #define GYRO_ADD_RAW_AND_VARIANCE_LOG_VALUES
 
@@ -83,13 +79,12 @@
 #define SENSORS_NBR_OF_BIAS_SAMPLES  512
 
 // Variance threshold to take zero bias for gyro
-#define GYRO_VARIANCE_BASE              100
+#define GYRO_VARIANCE_BASE              10000
 #define GYRO_VARIANCE_THRESHOLD_X       (GYRO_VARIANCE_BASE)
 #define GYRO_VARIANCE_THRESHOLD_Y       (GYRO_VARIANCE_BASE)
 #define GYRO_VARIANCE_THRESHOLD_Z       (GYRO_VARIANCE_BASE)
 
 #define SENSORS_ACC_SCALE_SAMPLES  200
-
 
 typedef struct
 {
@@ -110,6 +105,8 @@ static xQueueHandle accelerometerDataQueue;
 STATIC_MEM_QUEUE_ALLOC(accelerometerDataQueue, 1, sizeof(Axis3f));
 static xQueueHandle gyroDataQueue;
 STATIC_MEM_QUEUE_ALLOC(gyroDataQueue, 1, sizeof(Axis3f));
+static xQueueHandle gyroUnfilteredDataQueue;
+STATIC_MEM_QUEUE_ALLOC(gyroUnfilteredDataQueue, 1, sizeof(Axis3f));
 static xQueueHandle magnetometerDataQueue;
 STATIC_MEM_QUEUE_ALLOC(magnetometerDataQueue, 1, sizeof(Axis3f));
 static xQueueHandle barometerDataQueue;
@@ -147,13 +144,6 @@ static void applyAxis3fLpf(lpf2pData *data, Axis3f* in);
 static bool isBarometerPresent = false;
 static uint8_t baroMeasDelayMin = SENSORS_DELAY_BARO;
 
-// IMU alignment Euler angles
-static float imuPhi = IMU_PHI;
-static float imuTheta = IMU_THETA;
-static float imuPsi = IMU_PSI;
-
-static float R[3][3];
-
 // Pre-calculated values for accelerometer alignment
 static float cosPitch;
 static float sinPitch;
@@ -171,7 +161,6 @@ static void sensorsCalculateVarianceAndMean(BiasObj* bias, Axis3f* varOut, Axis3
 static void sensorsCalculateBiasMean(BiasObj* bias, Axis3i32* meanOut);
 static void sensorsAddBiasValue(BiasObj* bias, int16_t x, int16_t y, int16_t z);
 static bool sensorsFindBiasValue(BiasObj* bias);
-static void sensorsAlignToAirframe(Axis3f* in, Axis3f* out);
 static void sensorsAccAlignToGravity(Axis3f* in, Axis3f* out);
 
 STATIC_MEM_TASK_ALLOC(sensorsTask, SENSORS_TASK_STACKSIZE);
@@ -185,7 +174,7 @@ STATIC_MEM_TASK_ALLOC(sensorsTask, SENSORS_TASK_STACKSIZE);
  *
  * @return Zero if successful, otherwise an error code
  */
-bstdr_ret_t bmi088_burst_read(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_data, uint16_t len)
+static bstdr_ret_t bmi088_burst_read(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_data, uint16_t len)
 {
   /**< Burst read code comes here */
   if (i2cdevReadReg8(I2C3_DEV, dev_id, reg_addr, (uint16_t) len, reg_data))
@@ -205,7 +194,7 @@ bstdr_ret_t bmi088_burst_read(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_dat
  *
  * @return Zero if successful, otherwise an error code
  */
-bstdr_ret_t bmi088_burst_write(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_data, uint16_t len)
+static bstdr_ret_t bmi088_burst_write(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_data, uint16_t len)
 {
   /**< Burst write code comes here */
   if (i2cdevWriteReg8(I2C3_DEV, dev_id,reg_addr,(uint16_t) len, reg_data))
@@ -225,7 +214,7 @@ bstdr_ret_t bmi088_burst_write(uint8_t dev_id, uint8_t reg_addr, uint8_t *reg_da
  *
  * @return None
  */
-void bmi088_ms_delay(uint32_t period)
+static void bmi088_ms_delay(uint32_t period)
 {
   /**< Delay code comes */
   vTaskDelay(M2T(period)); // Delay a while to let the device stabilize
@@ -255,6 +244,11 @@ bool sensorsBmi088Bmp388ReadGyro(Axis3f *gyro)
   return (pdTRUE == xQueueReceive(gyroDataQueue, gyro, 0));
 }
 
+bool sensorsBmi088Bmp388ReadGyroUnfiltered(Axis3f *gyro)
+{
+  return (pdTRUE == xQueueReceive(gyroUnfilteredDataQueue, gyro, 0));
+}
+
 bool sensorsBmi088Bmp388ReadAcc(Axis3f *acc)
 {
   return (pdTRUE == xQueueReceive(accelerometerDataQueue, acc, 0));
@@ -273,6 +267,7 @@ bool sensorsBmi088Bmp388ReadBaro(baro_t *baro)
 void sensorsBmi088Bmp388Acquire(sensorData_t *sensors, const uint32_t tick)
 {
   sensorsReadGyro(&sensors->gyro);
+  sensorsReadGyroUnfiltered(&sensors->gyroUnfiltered);
   sensorsReadAcc(&sensors->acc);
   sensorsReadMag(&sensors->mag);
   sensorsReadBaro(&sensors->baro);
@@ -288,10 +283,7 @@ static void sensorsTask(void *param)
 {
   systemWaitStart();
 
-  Axis3f gyroScaledIMU;
-  Axis3f accScaledIMU;
   Axis3f accScaled;
-  measurement_t measurement;
   /* wait an additional second the keep bus free
    * this is only required by the z-ranger, since the
    * configuration will be done after system start-up */
@@ -316,29 +308,27 @@ static void sensorsTask(void *param)
       {
          processAccScale(accelRaw.x, accelRaw.y, accelRaw.z);
       }
-
       /* Gyro */
-      gyroScaledIMU.x =  (gyroRaw.x - gyroBias.x) * SENSORS_BMI088_DEG_PER_LSB_CFG;
-      gyroScaledIMU.y =  (gyroRaw.y - gyroBias.y) * SENSORS_BMI088_DEG_PER_LSB_CFG;
-      gyroScaledIMU.z =  (gyroRaw.z - gyroBias.z) * SENSORS_BMI088_DEG_PER_LSB_CFG;
-      sensorsAlignToAirframe(&gyroScaledIMU, &sensorData.gyro);
+      sensorData.gyro.x =  (gyroRaw.x - gyroBias.x) * SENSORS_BMI088_DEG_PER_LSB_CFG;
+      sensorData.gyro.y =  (gyroRaw.y - gyroBias.y) * SENSORS_BMI088_DEG_PER_LSB_CFG;
+      sensorData.gyro.z =  (gyroRaw.z - gyroBias.z) * SENSORS_BMI088_DEG_PER_LSB_CFG;
       applyAxis3fLpf((lpf2pData*)(&gyroLpf), &sensorData.gyro);
 
-      measurement.type = MeasurementTypeGyroscope;
-      measurement.data.gyroscope.gyro = sensorData.gyro;
-      estimatorEnqueue(&measurement);
+      /* Project Phoenix: Also log unfiltered gyro data 
+      
+      Removing the software low-pass filter showed performance increases in the paper:
+      Molchanov: Sim-to-(Multi)-Real Transfer of Low-Level Robust Control Policies to Multiple Quadrotors
+      */
+      sensorData.gyroUnfiltered.x =  (gyroRaw.x - gyroBias.x) * SENSORS_BMI088_DEG_PER_LSB_CFG;
+      sensorData.gyroUnfiltered.y =  (gyroRaw.y - gyroBias.y) * SENSORS_BMI088_DEG_PER_LSB_CFG;
+      sensorData.gyroUnfiltered.z =  (gyroRaw.z - gyroBias.z) * SENSORS_BMI088_DEG_PER_LSB_CFG;
 
       /* Acelerometer */
-      accScaledIMU.x = accelRaw.x * SENSORS_BMI088_G_PER_LSB_CFG / accScale;
-      accScaledIMU.y = accelRaw.y * SENSORS_BMI088_G_PER_LSB_CFG / accScale;
-      accScaledIMU.z = accelRaw.z * SENSORS_BMI088_G_PER_LSB_CFG / accScale;
-      sensorsAlignToAirframe(&accScaledIMU, &accScaled);
+      accScaled.x = accelRaw.x * SENSORS_BMI088_G_PER_LSB_CFG / accScale;
+      accScaled.y = accelRaw.y * SENSORS_BMI088_G_PER_LSB_CFG / accScale;
+      accScaled.z = accelRaw.z * SENSORS_BMI088_G_PER_LSB_CFG / accScale;
       sensorsAccAlignToGravity(&accScaled, &sensorData.acc);
       applyAxis3fLpf((lpf2pData*)(&accLpf), &sensorData.acc);
-
-      measurement.type = MeasurementTypeAcceleration;
-      measurement.data.acceleration.acc = sensorData.acc;
-      estimatorEnqueue(&measurement);
     }
 
     if (isBarometerPresent)
@@ -352,16 +342,12 @@ static void sensorsTask(void *param)
         /* Temperature and Pressure data are read and stored in the bmp3_data instance */
         bmp3_get_sensor_data(sensor_comp, &data, &bmp388Dev);
         sensorsScaleBaro(baro388, data.pressure, data.temperature);
-
-        measurement.type = MeasurementTypeBarometer;
-        measurement.data.barometer.baro = sensorData.baro;
-        estimatorEnqueue(&measurement);
-
         baroMeasDelay = baroMeasDelayMin;
       }
     }
     xQueueOverwrite(accelerometerDataQueue, &sensorData.acc);
     xQueueOverwrite(gyroDataQueue, &sensorData.gyro);
+    xQueueOverwrite(gyroUnfilteredDataQueue, &sensorData.gyroUnfiltered);
     if (isBarometerPresent)
     {
       xQueueOverwrite(barometerDataQueue, &sensorData.baro);
@@ -387,10 +373,13 @@ static void sensorsDeviceInit(void)
   // Wait for sensors to startup
   vTaskDelay(M2T(SENSORS_STARTUP_TIME_MS));
 
-  /* BMI088
-   * The bmi088Dev structure should have been filled in by the backend
-   * (i2c/spi) drivers at this point.
-  */
+  /* BMI088 */
+  bmi088Dev.accel_id = BMI088_ACCEL_I2C_ADDR_PRIMARY;
+  bmi088Dev.gyro_id = BMI088_GYRO_I2C_ADDR_SECONDARY;
+  bmi088Dev.interface = BMI088_I2C_INTF;
+  bmi088Dev.read = bmi088_burst_read;
+  bmi088Dev.write = bmi088_burst_write;
+  bmi088Dev.delay_ms = bmi088_ms_delay;
 
   /* BMI088 GYRO */
   rslt = bmi088_gyro_init(&bmi088Dev); // initialize the device
@@ -398,12 +387,12 @@ static void sensorsDeviceInit(void)
   {
     struct bmi088_int_cfg intConfig;
 
-    DEBUG_PRINT("BMI088 Gyro connection [OK].\n");
+    DEBUG_PRINT("BMI088 Gyro I2C connection [OK].\n");
     /* set power mode of gyro */
     bmi088Dev.gyro_cfg.power = BMI088_GYRO_PM_NORMAL;
     rslt |= bmi088_set_gyro_power_mode(&bmi088Dev);
     /* set bandwidth and range of gyro */
-    bmi088Dev.gyro_cfg.bw = BMI088_GYRO_BW_116_ODR_1000_HZ;
+    bmi088Dev.gyro_cfg.bw = BMI088_GYRO_BW_532_ODR_2000_HZ;
     bmi088Dev.gyro_cfg.range = SENSORS_BMI088_GYRO_FS_CFG;
     bmi088Dev.gyro_cfg.odr = BMI088_GYRO_BW_116_ODR_1000_HZ;
     rslt |= bmi088_set_gyro_meas_conf(&bmi088Dev);
@@ -423,7 +412,7 @@ static void sensorsDeviceInit(void)
   else
   {
 #ifndef SENSORS_IGNORE_IMU_FAIL
-    DEBUG_PRINT("BMI088 Gyro connection [FAIL]\n");
+    DEBUG_PRINT("BMI088 Gyro I2C connection [FAIL]\n");
     isInit = false;
 #endif
   }
@@ -435,7 +424,7 @@ static void sensorsDeviceInit(void)
   rslt = bmi088_accel_init(&bmi088Dev); // initialize the device
   if (rslt == BSTDR_OK)
   {
-    DEBUG_PRINT("BMI088 Accel connection [OK]\n");
+    DEBUG_PRINT("BMI088 Accel I2C connection [OK]\n");
     /* set power mode of accel */
     bmi088Dev.accel_cfg.power = BMI088_ACCEL_PM_ACTIVE;
     rslt |= bmi088_set_accel_power_mode(&bmi088Dev);
@@ -453,7 +442,7 @@ static void sensorsDeviceInit(void)
   else
   {
 #ifndef SENSORS_IGNORE_IMU_FAIL
-    DEBUG_PRINT("BMI088 Accel connection [FAIL]\n");
+    DEBUG_PRINT("BMI088 Accel I2C connection [FAIL]\n");
     isInit = false;
 #endif
   }
@@ -513,7 +502,7 @@ static void sensorsDeviceInit(void)
   }
   else
   {
-#ifndef CONFIG_SENSORS_IGNORE_BAROMETER_FAIL
+#ifndef SENSORS_IGNORE_BAROMETER_FAIL
     DEBUG_PRINT("BMP388 I2C connection [FAIL]\n");
     isInit = false;
     return;
@@ -539,6 +528,7 @@ static void sensorsTaskInit(void)
 {
   accelerometerDataQueue = STATIC_MEM_QUEUE_CREATE(accelerometerDataQueue);
   gyroDataQueue = STATIC_MEM_QUEUE_CREATE(gyroDataQueue);
+  gyroUnfilteredDataQueue = STATIC_MEM_QUEUE_CREATE(gyroUnfilteredDataQueue);
   magnetometerDataQueue = STATIC_MEM_QUEUE_CREATE(magnetometerDataQueue);
   barometerDataQueue = STATIC_MEM_QUEUE_CREATE(barometerDataQueue);
 
@@ -571,36 +561,19 @@ static void sensorsInterruptInit(void)
   portENABLE_INTERRUPTS();
 }
 
-static void sensorsBmi088Bmp388Init(void)
-{
-  sensorsBiasObjInit(&gyroBiasRunning);
-  sensorsDeviceInit();
-  sensorsInterruptInit();
-  sensorsTaskInit();
-}
-
-void sensorsBmi088Bmp388Init_SPI(void)
+void sensorsBmi088Bmp388Init(void)
 {
   if (isInit)
     {
       return;
     }
 
-    DEBUG_PRINT("BMI088: Using SPI interface.\n");
-    sensorsBmi088_SPI_deviceInit(&bmi088Dev);
-    sensorsBmi088Bmp388Init();
-}
+  i2cdevInit(I2C3_DEV);
 
-void sensorsBmi088Bmp388Init_I2C(void)
-{
-  if (isInit)
-  {
-    return;
-  }
-
-  DEBUG_PRINT("BMI088: Using I2C interface.\n");
-  sensorsBmi088_I2C_deviceInit(&bmi088Dev);
-  sensorsBmi088Bmp388Init();
+  sensorsBiasObjInit(&gyroBiasRunning);
+  sensorsDeviceInit();
+  sensorsInterruptInit();
+  sensorsTaskInit();
 }
 
 static bool gyroSelftest()
@@ -772,13 +745,13 @@ static void sensorsCalculateVarianceAndMean(BiasObj* bias, Axis3f* varOut, Axis3
     sumSq[2] += bias->buffer[i].z * bias->buffer[i].z;
   }
 
-  meanOut->x = (float) sum[0] / SENSORS_NBR_OF_BIAS_SAMPLES;
-  meanOut->y = (float) sum[1] / SENSORS_NBR_OF_BIAS_SAMPLES;
-  meanOut->z = (float) sum[2] / SENSORS_NBR_OF_BIAS_SAMPLES;
+  varOut->x = (sumSq[0] - ((int64_t)sum[0] * sum[0]) / SENSORS_NBR_OF_BIAS_SAMPLES);
+  varOut->y = (sumSq[1] - ((int64_t)sum[1] * sum[1]) / SENSORS_NBR_OF_BIAS_SAMPLES);
+  varOut->z = (sumSq[2] - ((int64_t)sum[2] * sum[2]) / SENSORS_NBR_OF_BIAS_SAMPLES);
 
-  varOut->x = sumSq[0] / SENSORS_NBR_OF_BIAS_SAMPLES - meanOut->x * meanOut->x;
-  varOut->y = sumSq[1] / SENSORS_NBR_OF_BIAS_SAMPLES - meanOut->y * meanOut->y;
-  varOut->z = sumSq[2] / SENSORS_NBR_OF_BIAS_SAMPLES - meanOut->z * meanOut->z;
+  meanOut->x = (float)sum[0] / SENSORS_NBR_OF_BIAS_SAMPLES;
+  meanOut->y = (float)sum[1] / SENSORS_NBR_OF_BIAS_SAMPLES;
+  meanOut->z = (float)sum[2] / SENSORS_NBR_OF_BIAS_SAMPLES;
 }
 
 /**
@@ -874,36 +847,6 @@ bool sensorsBmi088Bmp388ManufacturingTest(void)
 }
 
 /**
- * Align the sensors to the Airframe axes
- */
-static void sensorsAlignToAirframe(Axis3f* in, Axis3f* out)
-{
-  // IMU alignment
-  static float sphi, cphi, stheta, ctheta, spsi, cpsi;
-
-  sphi   = sinf(imuPhi * (float) M_PI / 180);
-  cphi   = cosf(imuPhi * (float) M_PI / 180);
-  stheta = sinf(imuTheta * (float) M_PI / 180);
-  ctheta = cosf(imuTheta * (float) M_PI / 180);
-  spsi   = sinf(imuPsi * (float) M_PI / 180);
-  cpsi   = cosf(imuPsi * (float) M_PI / 180);
-
-  R[0][0] = ctheta * cpsi;
-  R[0][1] = ctheta * spsi;
-  R[0][2] = -stheta;
-  R[1][0] = sphi * stheta * cpsi - cphi * spsi;
-  R[1][1] = sphi * stheta * spsi + cphi * cpsi;
-  R[1][2] = sphi * ctheta;
-  R[2][0] = cphi * stheta * cpsi + sphi * spsi;
-  R[2][1] = cphi * stheta * spsi - sphi * cpsi;
-  R[2][2] = cphi * ctheta;
-
-  out->x = in->x*R[0][0] + in->y*R[0][1] + in->z*R[0][2];
-  out->y = in->x*R[1][0] + in->y*R[1][1] + in->z*R[1][2];
-  out->z = in->x*R[2][0] + in->y*R[2][1] + in->z*R[2][2];
-}
-
-/**
  * Compensate for a miss-aligned accelerometer. It uses the trim
  * data gathered from the UI and written in the config-block to
  * rotate the accelerometer to be aligned with gravity.
@@ -996,25 +939,5 @@ LOG_GROUP_STOP(gyro)
 #endif
 
 PARAM_GROUP_START(imu_sensors)
-
-/**
- * @brief Nonzero if BMP388 barometer is present
- */
 PARAM_ADD(PARAM_UINT8 | PARAM_RONLY, BMP388, &isBarometerPresent)
-
-/**
- * @brief Euler angle Phi defining IMU orientation on the airframe (in degrees)
- */
-PARAM_ADD(PARAM_FLOAT | PARAM_PERSISTENT, imuPhi, &imuPhi)
-
-/**
- * @brief Euler angle Theta defining IMU orientation on the airframe (in degrees)
- */
-PARAM_ADD(PARAM_FLOAT | PARAM_PERSISTENT, imuTheta, &imuTheta)
-
-/**
- * @brief Euler angle Psi defining IMU orientation on the airframe (in degrees)
- */
-PARAM_ADD(PARAM_FLOAT | PARAM_PERSISTENT, imuPsi, &imuPsi)
-
 PARAM_GROUP_STOP(imu_sensors)

@@ -43,7 +43,6 @@
 #include "ledseq.h"
 #include "queuemonitor.h"
 #include "static_mem.h"
-#include "cfassert.h"
 
 #define RADIOLINK_TX_QUEUE_SIZE (1)
 #define RADIOLINK_CRTP_QUEUE_SIZE (5)
@@ -160,8 +159,7 @@ void radiolinkSyslinkDispatch(SyslinkPacket *slp)
   if (slp->type == SYSLINK_RADIO_RAW)
   {
     slp->length--; // Decrease to get CRTP size.
-    // Assert that we are not dopping any packets
-    ASSERT(xQueueSend(crtpPacketDelivery, &slp->length, 0) == pdPASS);
+    xQueueSend(crtpPacketDelivery, &slp->length, 0);
     ledseqRun(&seq_linkUp);
     // If a radio packet is received, one can be sent
     if (xQueueReceive(txQueue, &txPacket, 0) == pdTRUE)
@@ -172,7 +170,6 @@ void radiolinkSyslinkDispatch(SyslinkPacket *slp)
   } else if (slp->type == SYSLINK_RADIO_RAW_BROADCAST)
   {
     slp->length--; // Decrease to get CRTP size.
-    // broadcasts are best effort, so no need to handle the case where the queue is full
     xQueueSend(crtpPacketDelivery, &slp->length, 0);
     ledseqRun(&seq_linkUp);
     // no ack for broadcasts
@@ -186,14 +183,10 @@ void radiolinkSyslinkDispatch(SyslinkPacket *slp)
     P2PPacket p2pp;
     p2pp.port=slp->data[0];
     p2pp.rssi = slp->data[1];
-
-    const uint8_t p2pDataLength = slp->length - 2;
-    memcpy(&p2pp.data[0], &slp->data[2], p2pDataLength);
-    p2pp.size = p2pDataLength;
-
-    if (p2p_callback) {
+    memcpy(&p2pp.data[0], &slp->data[2],slp->length-2);
+    p2pp.size=slp->length;
+    if (p2p_callback)
         p2p_callback(&p2pp);
-    }
   }
 
   isConnected = radiolinkIsConnected();
@@ -260,6 +253,6 @@ static int radiolinkSetEnable(bool enable)
 }
 
 LOG_GROUP_START(radio)
-LOG_ADD_CORE(LOG_UINT8, rssi, &rssi)
-LOG_ADD_CORE(LOG_UINT8, isConnected, &isConnected)
+LOG_ADD(LOG_UINT8, rssi, &rssi)
+LOG_ADD(LOG_UINT8, isConnected, &isConnected)
 LOG_GROUP_STOP(radio)

@@ -73,6 +73,8 @@ static xQueueHandle  txQueue;
 #define CRTP_TX_QUEUE_SIZE 120
 #define CRTP_RX_QUEUE_SIZE 16
 
+#define CRTP_DELAY_MS 10
+
 static void crtpTxTask(void *param);
 static void crtpRxTask(void *param);
 
@@ -154,7 +156,7 @@ void crtpTxTask(void *param)
         while (link->sendPacket(&p) == false)
         {
           // Relaxation time
-          vTaskDelay(M2T(10));
+          vTaskDelay(M2T(CRTP_DELAY_MS)); // original: vTaskDelay(M2T(10));
         }
         stats.txCount++;
         updateStats();
@@ -162,7 +164,7 @@ void crtpTxTask(void *param)
     }
     else
     {
-      vTaskDelay(M2T(10));
+      vTaskDelay(M2T(CRTP_DELAY_MS)); // original: vTaskDelay(M2T(10));
     }
   }
 }
@@ -179,8 +181,11 @@ void crtpRxTask(void *param)
       {
         if (queues[p.port])
         {
-          // Block, since we should never drop a packet
-          xQueueSend(queues[p.port], &p, portMAX_DELAY);
+          if (xQueueSend(queues[p.port], &p, 0) == errQUEUE_FULL)
+          {
+            // We should never drop packet
+            ASSERT(0);
+          }
         }
 
         if (callbacks[p.port])
@@ -194,7 +199,7 @@ void crtpRxTask(void *param)
     }
     else
     {
-      vTaskDelay(M2T(10));
+      vTaskDelay(M2T(CRTP_DELAY_MS)); // original: vTaskDelay(M2T(10));
     }
   }
 }
@@ -281,4 +286,4 @@ static void updateStats()
 LOG_GROUP_START(crtp)
 LOG_ADD(LOG_UINT16, rxRate, &stats.rxRate)
 LOG_ADD(LOG_UINT16, txRate, &stats.txRate)
-LOG_GROUP_STOP(crtp)
+LOG_GROUP_STOP(tdoa)

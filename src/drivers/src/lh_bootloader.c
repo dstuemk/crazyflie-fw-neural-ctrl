@@ -32,7 +32,6 @@
 
 #include "lh_bootloader.h"
 #include "debug.h"
-#include "i2cdev.h"
 
 #define LH_I2C_ADDR         0x2F
 #define LH_FW_SIZE          0x020000
@@ -52,6 +51,7 @@
 
 
 static uint8_t devAddr;
+static I2C_Dev *I2Cx;
 static bool isInit;
 static uint8_t flashWriteBuf[LH_WRITE_BUF_SIZE];
 static uint8_t flashReadBuf[LH_WRITE_BUF_SIZE];
@@ -60,10 +60,10 @@ static bool lhExchange(uint16_t writeLen, uint8_t* writeData, uint16_t readLen, 
 {
   bool status = false;
 
-  status = i2cdevWrite(I2C1_DEV, devAddr, writeLen, writeData);
+  status = i2cdevWrite(I2Cx, devAddr, writeLen, writeData);
   if (status && readLen && readData)
   {
-    status = i2cdevRead(I2C1_DEV, devAddr, readLen, readData);
+    status = i2cdevRead(I2Cx, devAddr, readLen, readData);
   }
 
   return status;
@@ -91,11 +91,12 @@ static bool verify(uint8_t *dataA, uint8_t *dataB, uint16_t length)
   return true;
 }
 
-bool lhblInit()
+bool lhblInit(I2C_Dev *i2cPort)
 {
   if (isInit)
     return true;
 
+  I2Cx = i2cPort;
   devAddr = LH_I2C_ADDR;
 
   isInit = true;
@@ -151,7 +152,7 @@ static bool lhblFlashWaitComplete(void)
   return status;
 }
 
-bool lhblFlashWritePage(uint32_t address, uint16_t length, const uint8_t *data)
+static bool lhblFlashWritePage(uint32_t address, uint16_t length, uint8_t *data)
 {
   ASSERT(address >= LH_FW_ADDR);
   ASSERT(length <= LH_FLASH_PAGE_SIZE);

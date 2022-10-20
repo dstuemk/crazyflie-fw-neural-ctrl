@@ -28,7 +28,7 @@
 #define ATTITUDE_CONTROLLER_H_
 
 #include <stdbool.h>
-#include <stdint.h>
+#include "commander.h"
 
 
 void attitudeControllerInit(const float updateDt);
@@ -72,11 +72,6 @@ void attitudeControllerResetAllPID(void);
  * Get the actuator output.
  */
 void attitudeControllerGetActuatorOutput(int16_t* roll, int16_t* pitch, int16_t* yaw);
-
-/**
- * Get yaw max delta
- */
-float attitudeControllerGetYawMaxDelta(void);
 
 
 #endif /* ATTITUDE_CONTROLLER_H_ */

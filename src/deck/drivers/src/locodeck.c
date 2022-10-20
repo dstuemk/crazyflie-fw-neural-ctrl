@@ -7,7 +7,7 @@
  *
  * Crazyflie control firmware
  *
- * Copyright (C) 2021 Bitcraze AB
+ * Copyright (C) 2016 Bitcraze AB
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -41,7 +41,6 @@
 #include "task.h"
 #include "queue.h"
 
-#include "autoconf.h"
 #include "deck.h"
 #include "system.h"
 #include "debug.h"
@@ -62,7 +61,7 @@
 #define CS_PIN DECK_GPIO_IO1
 
 // LOCO deck alternative IRQ and RESET pins(IO_2, IO_3) instead of default (RX1, TX1), leaving UART1 free for use
-#ifdef CONFIG_DECK_LOCODECK_USE_ALT_PINS
+#ifdef LOCODECK_USE_ALT_PINS
   #define GPIO_PIN_IRQ 	  DECK_GPIO_IO2
 
   #ifndef LOCODECK_ALT_PIN_RESET
@@ -74,16 +73,21 @@
   #define EXTI_PortSource EXTI_PortSourceGPIOB
   #define EXTI_PinSource 	EXTI_PinSource5
   #define EXTI_LineN 		  EXTI_Line5
+  #define EXTI_IRQChannel EXTI9_5_IRQn
 #else
   #define GPIO_PIN_IRQ 	  DECK_GPIO_RX1
   #define GPIO_PIN_RESET 	DECK_GPIO_TX1
   #define EXTI_PortSource EXTI_PortSourceGPIOC
   #define EXTI_PinSource 	EXTI_PinSource11
   #define EXTI_LineN 		  EXTI_Line11
+  #define EXTI_IRQChannel EXTI15_10_IRQn
 #endif
 
 
 #define DEFAULT_RX_TIMEOUT 10000
+
+
+#define ANTENNA_OFFSET 154.6   // In meter
 
 // The anchor position can be set using parameters
 // As an option you can set a static position in this file and set
@@ -91,11 +95,11 @@
 
 static lpsAlgoOptions_t algoOptions = {
   // .userRequestedMode is the wanted algorithm, available as a parameter
-#if defined(CONFIG_DECK_LOCO_ALGORITHM_TDOA2)
+#if LPS_TDOA_ENABLE
   .userRequestedMode = lpsMode_TDoA2,
-#elif defined(CONFIG_DECK_LOCO_ALGORITHM_TDOA3)
+#elif LPS_TDOA3_ENABLE
   .userRequestedMode = lpsMode_TDoA3,
-#elif defined(CONFIG_DECK_LOCO_ALGORITHM_TWR)
+#elif defined(LPS_TWR_ENABLE)
   .userRequestedMode = lpsMode_TWR,
 #else
   .userRequestedMode = lpsMode_auto,
@@ -117,9 +121,9 @@ struct {
   [lpsMode_TDoA3] = {.algorithm = &uwbTdoa3TagAlgorithm, .name="TDoA3"},
 };
 
-#if defined(CONFIG_DECK_LOCO_ALGORITHM_TDOA2)
+#if LPS_TDOA_ENABLE
 static uwbAlgorithm_t *algorithm = &uwbTdoa2TagAlgorithm;
-#elif defined(CONFIG_DECK_LOCO_ALGORITHM_TDOA3)
+#elif LPS_TDOA3_ENABLE
 static uwbAlgorithm_t *algorithm = &uwbTdoa3TagAlgorithm;
 #else
 static uwbAlgorithm_t *algorithm = &uwbTwrTagAlgorithm;
@@ -425,7 +429,7 @@ static void spiRead(dwDevice_t* dev, const void *header, size_t headerLength,
   STATS_CNT_RATE_EVENT(&spiReadCount);
 }
 
-#if CONFIG_DECK_LOCODECK_USE_ALT_PINS
+#if LOCODECK_USE_ALT_PINS
   void __attribute__((used)) EXTI5_Callback(void)
 #else
   void __attribute__((used)) EXTI11_Callback(void)
@@ -433,12 +437,14 @@ static void spiRead(dwDevice_t* dev, const void *header, size_t headerLength,
   {
     portBASE_TYPE  xHigherPriorityTaskWoken = pdFALSE;
 
+    NVIC_ClearPendingIRQ(EXTI_IRQChannel);
+    EXTI_ClearITPendingBit(EXTI_LineN);
+
     // Unlock interrupt handling task
     vTaskNotifyGiveFromISR(uwbTaskHandle, &xHigherPriorityTaskWoken);
 
-    if(xHigherPriorityTaskWoken) {
-      portYIELD();
-    }
+    if(xHigherPriorityTaskWoken)
+    portYIELD();
   }
 
 static void spiSetSpeed(dwDevice_t* dev, dwSpiSpeed_t speed)
@@ -470,6 +476,7 @@ static dwOps_t dwOps = {
 static void dwm1000Init(DeckInfo *info)
 {
   EXTI_InitTypeDef EXTI_InitStructure;
+  NVIC_InitTypeDef NVIC_InitStructure;
 
   spiBegin();
 
@@ -516,7 +523,7 @@ static void dwm1000Init(DeckInfo *info)
   dwSetDefaults(dwm);
 
 
-  #ifdef CONFIG_DECK_LOCO_LONGER_RANGE
+  #ifdef LPS_LONGER_RANGE
   dwEnableMode(dwm, MODE_SHORTDATA_MID_ACCURACY);
   #else
   dwEnableMode(dwm, MODE_SHORTDATA_FAST_ACCURACY);
@@ -525,7 +532,7 @@ static void dwm1000Init(DeckInfo *info)
   dwSetChannel(dwm, CHANNEL_2);
   dwSetPreambleCode(dwm, PREAMBLE_CODE_64MHZ_9);
 
-  #ifdef CONFIG_DECK_LOCO_FULL_TX_POWER
+  #ifdef LPS_FULL_TX_POWER
   dwUseSmartPower(dwm, false);
   dwSetTxPower(dwm, 0x1F1F1F1Ful);
   #else
@@ -538,9 +545,16 @@ static void dwm1000Init(DeckInfo *info)
 
   memoryRegisterHandler(&memDef);
 
+  // Enable interrupt
+  NVIC_InitStructure.NVIC_IRQChannel = EXTI_IRQChannel;
+  NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = NVIC_VERY_HIGH_PRI;
+  NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
+  NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+  NVIC_Init(&NVIC_InitStructure);
+
   algoSemaphore= xSemaphoreCreateMutex();
 
-  xTaskCreate(uwbTask, LPS_DECK_TASK_NAME, LPS_DECK_STACKSIZE, NULL,
+  xTaskCreate(uwbTask, LPS_DECK_TASK_NAME, 3 * configMINIMAL_STACK_SIZE, NULL,
                     LPS_DECK_TASK_PRI, &uwbTaskHandle);
 
   isInit = true;
@@ -569,13 +583,7 @@ static const DeckDriver dwm1000_deck = {
   .pid = 0x06,
   .name = "bcDWM1000",
 
-#ifdef CONFIG_DECK_LOCODECK_USE_ALT_PINS
-  .usedGpio = DECK_USING_IO_1 | DECK_USING_IO_2 | DECK_USING_IO_3,
-#else
-   // (PC10/PC11 is UART1 TX/RX)
-  .usedGpio = DECK_USING_IO_1 | DECK_USING_PC10 | DECK_USING_PC11,
-#endif
-  .usedPeriph = DECK_USING_SPI,
+  .usedGpio = 0,  // FIXME: set the used pins
   .requiredEstimator = kalmanEstimator,
   #ifdef LOCODECK_NO_LOW_INTERFERENCE
   .requiredLowInterferenceRadioMode = false,
@@ -590,96 +598,19 @@ static const DeckDriver dwm1000_deck = {
 DECK_DRIVER(dwm1000_deck);
 
 PARAM_GROUP_START(deck)
-
-/**
- * @brief Nonzero if [Loco positioning deck](%https://store.bitcraze.io/products/loco-positioning-deck) is attached
- */
-PARAM_ADD_CORE(PARAM_UINT8 | PARAM_RONLY, bcDWM1000, &isInit)
-
+PARAM_ADD(PARAM_UINT8 | PARAM_RONLY, bcDWM1000, &isInit)
 PARAM_GROUP_STOP(deck)
 
 LOG_GROUP_START(ranging)
 LOG_ADD(LOG_UINT16, state, &algoOptions.rangingState)
 LOG_GROUP_STOP(ranging)
 
-/**
- * Log group for basic information about the Loco Positioning System
- */
 LOG_GROUP_START(loco)
-
-/**
- * @brief The current mode of the Loco Positionning system
- *
- * | Value | Mode   | \n
- * | -     | -      | \n
- * |   1   | TWR    | \n
- * |   2   | TDoA 2 | \n
- * |   3   | TDoA 3 | \n
- */
-LOG_ADD_CORE(LOG_UINT8, mode, &algoOptions.currentRangingMode)
-
+LOG_ADD(LOG_UINT8, mode, &algoOptions.currentRangingMode)
 STATS_CNT_RATE_LOG_ADD(spiWr, &spiWriteCount)
 STATS_CNT_RATE_LOG_ADD(spiRe, &spiReadCount)
 LOG_GROUP_STOP(loco)
 
-/**
- * The Loco Positioning System implements three different positioning modes:
- * Two Way Ranging (TWR), Time Difference of Arrival 2 (TDoA 2) and Time Difference of Arrival 3 (TDoA 3)
- *
- * ### TWR mode
- *
- * In this mode, the tag pings the anchors in sequence, this allows it to
- * measure the distance between the tag and the anchors. Using this information
- * a theoretical minimum of 4 Anchors is required to calculate the 3D position
- * of a Tag, but a more realistic number is 6 to add redundancy and accuracy.
- * This mode is the most accurate mode and also works when the tag or quad
- * leaves the space delimited by the anchors. The tag is actively communicating
- * with the anchors in a time slotted fashion and in this mode only one tag or
- * quad can be positioned with a maximum of 8 anchors.
- *
- * ### TDoA 2 mode
- *
- * In TDoA 2 mode, the anchor system is continuously sending synchronization
- * packets. A tag listening to these packets can calculate the relative
- * distance to two anchors by measuring the time difference of arrival of the
- * packets. From the TDoA information it is possible to calculate the 3D
- * position in space. In this mode the tag is only passively listening, so new
- * tags do not add any load to the system which makes it possible to position
- * any number of tags or quads simultaneously. This makes it a perfect
- * mode for swarming.
- *
- * Compared to TWR, TDoA 2 is more restrictive when it comes to the space where
- * positioning works, ideally the tag should be within, or very close to,
- * the space delimited by the anchor system. This means that TDoA 2 works best
- * with 8 anchors placed in the corners of the flying space. In this space the
- * accuracy and precision is comparable to TWR.
-
- * In this mode the anchor system is time slotted and synchronized and the
- * number of anchors is limited to 8.
- *
- * ### TDoA 3 mode
- *
- * The TDoA 3 mode has many similarities with TDoA 2 and supports any number
- * of tags or quads. The main difference is that the time slotted scheme of
- * TDoA 2 has been replaced by a randomized transmission schedule which makes
- * it possible to add more anchors. By adding more anchors the system can be
- * scaled to larger spaces or span multiple rooms without line of sight between
- * all anchors. It also makes it more robust and can handle loss or addition of
- * anchors dynamically. The estimated position in this mode might be slightly
- * more noisy compared to TDoA 2.
- */
 PARAM_GROUP_START(loco)
-
-/**
- * @brief The Loco positioning mode to use (default: 0)
- *
- * | Value | Mode   |\n
- * | -     | -      |\n
- * |   0   | Auto   |\n
- * |   1   | TWR    |\n
- * |   2   | TDoA 2 |\n
- * |   3   | TDoA 3 |\n
- */
-PARAM_ADD_CORE(PARAM_UINT8, mode, &algoOptions.userRequestedMode)
-
+PARAM_ADD(PARAM_UINT8, mode, &algoOptions.userRequestedMode)
 PARAM_GROUP_STOP(loco)

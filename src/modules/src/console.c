@@ -148,7 +148,7 @@ int consolePutcharFromISR(int ch) {
   return ch;
 }
 
-int consolePuts(const char *str)
+int consolePuts(char *str)
 {
   int ret = 0;
 

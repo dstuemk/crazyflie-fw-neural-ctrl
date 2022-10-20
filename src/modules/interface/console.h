@@ -63,7 +63,7 @@ int consolePutcharFromISR(int ch);
  * @param str Null terminated string
  * @return a nonnegative number on success, or EOF on error.
  */
-int consolePuts(const char *str);
+int consolePuts(char *str);
 
 /**
  * Flush the console buffer

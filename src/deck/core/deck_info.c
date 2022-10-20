@@ -33,13 +33,11 @@
 #include "deck.h"
 
 #include "ow.h"
-#include "crc32.h"
+#include "crc.h"
 #include "debug.h"
 #include "static_mem.h"
 
-#include "autoconf.h"
-
-#ifdef CONFIG_DEBUG
+#ifdef DEBUG
   #define DECK_INFO_DBG_PRINT(fmt, ...)  DEBUG_PRINT(fmt, ## __VA_ARGS__)
 #else
   #define DECK_INFO_DBG_PRINT(...)
@@ -56,7 +54,14 @@ static StateEstimatorType requiredEstimator = anyEstimator;
 static bool registerRequiredEstimator(StateEstimatorType estimator);
 static bool requiredLowInterferenceRadioMode = false;
 
-static char* deck_force = CONFIG_DECK_FORCE;
+#ifndef DECK_FORCE
+#define DECK_FORCE
+#endif
+
+#define xstr(s) str(s)
+#define str(s) #s
+
+static char* deck_force = xstr(DECK_FORCE);
 
 void deckInfoInit()
 {
@@ -88,7 +93,7 @@ DeckInfo * deckInfo(int i)
 // Dummy driver for decks that do not have a driver implemented
 static const DeckDriver dummyDriver;
 
-#ifndef CONFIG_DEBUG_DECK_IGNORE_OWS
+#ifndef IGNORE_OW_DECKS
 static const DeckDriver * findDriver(DeckInfo *deck)
 {
   char name[30];
@@ -133,7 +138,7 @@ void printDeckInfo(DeckInfo *info)
   }
 }
 
-#ifndef CONFIG_DEBUG_DECK_IGNORE_OWS
+#ifndef IGNORE_OW_DECKS
 static bool infoDecode(DeckInfo * info)
 {
   uint8_t crcHeader;
@@ -144,7 +149,7 @@ static bool infoDecode(DeckInfo * info)
     return false;
   }
 
-  crcHeader = crc32CalculateBuffer(info->raw, DECK_INFO_HEADER_SIZE);
+  crcHeader = crcSlow(info->raw, DECK_INFO_HEADER_SIZE);
   if(info->crc != crcHeader) {
     DEBUG_PRINT("Memory error: incorrect header CRC\n");
     return false;
@@ -155,7 +160,7 @@ static bool infoDecode(DeckInfo * info)
     return false;
   }
 
-  crcTlv = crc32CalculateBuffer(&info->raw[DECK_INFO_TLV_VERSION_POS], info->raw[DECK_INFO_TLV_LENGTH_POS]+2);
+  crcTlv = crcSlow(&info->raw[DECK_INFO_TLV_VERSION_POS], info->raw[DECK_INFO_TLV_LENGTH_POS]+2);
   if(crcTlv != info->raw[DECK_INFO_TLV_DATA_POS + info->raw[DECK_INFO_TLV_LENGTH_POS]]) {
     DEBUG_PRINT("Memory error: incorrect TLV CRC %x!=%x\n", (unsigned int)crcTlv,
                 info->raw[DECK_INFO_TLV_DATA_POS + info->raw[DECK_INFO_TLV_LENGTH_POS]]);
@@ -185,7 +190,7 @@ static void enumerateDecks(void)
     nDecks = 0;
   }
 
-#ifndef CONFIG_DEBUG_DECK_IGNORE_OWS
+#ifndef IGNORE_OW_DECKS
   for (int i = 0; i < nDecks; i++)
   {
     DECK_INFO_DBG_PRINT("Enumerating deck %i\n", i);
@@ -196,7 +201,7 @@ static void enumerateDecks(void)
         deckInfos[i].driver = findDriver(&deckInfos[i]);
         printDeckInfo(&deckInfos[i]);
       } else {
-#ifdef CONFIG_DEBUG
+#ifdef DEBUG
         DEBUG_PRINT("Deck %i has corrupt OW memory. "
                     "Ignoring the deck in DEBUG mode.\n", i);
         deckInfos[i].driver = &dummyDriver;
@@ -220,8 +225,8 @@ static void enumerateDecks(void)
 #endif
 
   // Add build-forced driver
-  if (strlen(deck_force) > 0 && strncmp(deck_force, "none", 4) != 0) {
-    DEBUG_PRINT("CONFIG_DECK_FORCE=%s found\n", deck_force);
+  if (strlen(deck_force) > 0) {
+    DEBUG_PRINT("DECK_FORCE=%s found\n", deck_force);
   	//split deck_force into multiple, separated by colons, if available
     char delim[] = ":";
 
@@ -264,20 +269,11 @@ static void checkPeriphAndGpioConflicts(void)
 
   for (int i = 0; i < count; i++)
   {
-    uint32_t matchPeriph = usedPeriph & deckInfos[i].driver->usedPeriph;
-    if (matchPeriph != 0) {
-      //
-      // Here we know that two decks share a periph, that is only ok if it is a
-      // bus. So, we check if the matching periphs contain a non-bus peripheral
-      // by ANDing with the inverse of a mask made up with all bus peripherals.
-      //
-      uint32_t bus_mask = ~(DECK_USING_I2C | DECK_USING_SPI);
-      if ((matchPeriph & bus_mask) != 0) {
-        DEBUG_PRINT("ERROR: Driver Periph usage conflicts with a "
-                    "previously enumerated deck driver. No decks will be "
-                    "initialized!\n");
-        noError = false;
-      }
+    if (usedPeriph & deckInfos[i].driver->usedPeriph) {
+      DEBUG_PRINT("ERROR: Driver Periph usage conflicts with a "
+                  "previously enumerated deck driver. No decks will be "
+                  "initialized!\n");
+      noError = false;
     }
 
     if (usedGpio & deckInfos[i].driver->usedGpio) {

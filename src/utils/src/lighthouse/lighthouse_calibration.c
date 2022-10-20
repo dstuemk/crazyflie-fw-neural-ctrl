@@ -54,7 +54,6 @@ void lighthouseCalibrationInitFromFrame(lighthouseCalibration_t *calib, struct o
   calib->sweep[1].ogeemag = frame->ogeemag1;
   calib->sweep[1].ogeephase = frame->ogeephase1;
 
-  calib->uid = frame->id;
   calib->valid = true;
 }
 

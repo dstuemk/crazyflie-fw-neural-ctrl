@@ -14,7 +14,7 @@
 #include "ledseq.h"
 #include "log.h"
 #include "param.h"
-#include "supervisor.h"
+#include "sitaw.h"
 #include "controller.h"
 #include "ledseq.h"
 #include "pptraj.h"
@@ -173,12 +173,43 @@ static bool isBatLow() { return logGetInt(logIdPmState) == lowPower; }
 static bool isCharging() { return logGetInt(logIdPmState) == charging; }
 static bool isLighthouseAvailable() { return logGetFloat(logIdlighthouseEstBs0Rt) >= 0.0f || logGetFloat(logIdlighthouseEstBs1Rt) >= 0.0f; }
 
+const baseStationGeometry_t lighthouseGeoData[PULSE_PROCESSOR_N_BASE_STATIONS]  = {
+ {.valid = true, .origin = {-2.057947, 0.398319, 3.109704, }, .mat = {{0.807210, 0.002766, 0.590258, }, {0.067095, 0.993078, -0.096409, }, {-0.586439, 0.117426, 0.801437, }, }},
+ {.valid = true, .origin = {0.866244, -2.566829, 3.132632, }, .mat = {{-0.043296, -0.997675, -0.052627, }, {0.766284, -0.066962, 0.639003, }, {-0.641042, -0.012661, 0.767401, }, }},
+};
 
+lighthouseCalibration_t lighthouseCalibrationData[PULSE_PROCESSOR_N_BASE_STATIONS] = {
+  { // Base station 0
+    .valid = true,
+    .sweep = {
+      {.tilt = -0.047058, .phase = 0.0, .curve = 0.052215, .gibphase = 2.087890, .gibmag = -0.003913, .ogeephase = 0.433105, .ogeemag = -0.049285},
+      {.tilt = 0.048065, .phase = -0.005336, .curve = 0.122375, .gibphase = 2.097656, .gibmag = -0.003883, .ogeephase = 0.631835, .ogeemag = -0.034851},
+    },
+  },
+  { // Base station 1
+    .valid = true,
+    .sweep = {
+      {.tilt = -0.051208, .phase = 0.0, .curve = 0.011756, .gibphase = 2.136718, .gibmag = -0.006057, .ogeephase = 2.705078,},
+      {.tilt = 0.045623, .phase = -0.004142, .curve = 0.104736, .gibphase = 2.349609, .gibmag = -0.003332, .ogeephase = 0.380859, .ogeemag = -0.240112,},
+    },
+  },
+};
 
 #ifdef USE_MELLINGER
 static void enableMellingerController() { paramSetInt(paramIdStabilizerController, ControllerTypeMellinger); }
 #endif
 static void enableHighlevelCommander() { paramSetInt(paramIdCommanderEnHighLevel, 1); }
+static void useCrossingBeamPositioningMethod() { paramSetInt(paramIdLighthouseMethod, 0); }
+
+static void setupLighthouse() {
+  lighthousePositionSetGeometryData(0, &lighthouseGeoData[0]);
+  lighthousePositionSetGeometryData(1, &lighthouseGeoData[1]);
+
+  lighthouseCoreSetCalibrationData(0, &lighthouseCalibrationData[0]);
+  lighthouseCoreSetCalibrationData(1, &lighthouseCalibrationData[1]);
+
+  useCrossingBeamPositioningMethod();
+}
 
 static void defineTrajectory() {
   const uint32_t polyCount = sizeof(sequence) / sizeof(struct poly4d);
@@ -223,6 +254,7 @@ void appMain() {
     enableMellingerController();
   #endif
 
+  setupLighthouse();
   enableHighlevelCommander();
   defineTrajectory();
   defineLedSequence();
@@ -236,7 +268,7 @@ static void appTimer(xTimerHandle timer) {
   now = xTaskGetTickCount();
   uint32_t delta = now - previous;
 
-  if(supervisorIsTumbled()) {
+  if(sitAwTuDetected()) {
     state = STATE_CRASHED;
   }
 

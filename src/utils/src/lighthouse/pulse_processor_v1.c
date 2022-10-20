@@ -32,7 +32,6 @@
 #include <math.h>
 #include "test_support.h"
 #include "physicalConstants.h"
-#include "autoconf.h"
 
 // Decoding contants
 // Times are expressed in a 24MHz clock
@@ -78,8 +77,8 @@ static void synchronize(pulseProcessorV1_t *stateV1, int sensor, uint32_t timest
 
     for (int i=0; i<PULSE_PROCESSOR_N_SENSORS; i++) {
       const int bsSyncsFound = findSyncTime(stateV1->pulseHistory[i], &sync0Times[syncTimeCount]);
-      if (bsSyncsFound >= stateV1->baseStationsSynchronizedCount) {
-        stateV1->baseStationsSynchronizedCount = bsSyncsFound;
+      if (bsSyncsFound >= stateV1->basestationsSynchronizedCount) {
+        stateV1->basestationsSynchronizedCount = bsSyncsFound;
         syncTimeCount += 1;
       }
 
@@ -208,9 +207,9 @@ static bool processPreviousFrame(pulseProcessorV1_t *stateV1, pulseProcessorResu
           *baseStation = stateV1->currentBaseStation;
           *axis = stateV1->currentAxis;
 
-          pulseProcessorSensorMeasurement_t* measurement = &result->baseStationMeasurementsLh1[stateV1->currentBaseStation].sensorMeasurements[sensor];
-          measurement->angles[stateV1->currentAxis] = angle;
-          measurement->validCount++;
+          pulseProcessorBaseStationMeasuremnt_t* bsMeasurement = &result->sensorMeasurementsLh1[sensor].baseStatonMeasurements[stateV1->currentBaseStation];
+          bsMeasurement->angles[stateV1->currentAxis] = angle;
+          bsMeasurement->validCount++;
 
           anglesMeasured = true;
         }
@@ -275,20 +274,27 @@ TESTABLE_STATIC bool isNewSync(uint32_t timestamp, uint32_t lastSync) {
 #define DEBUG_PRINT printf
 #endif
 
-static bool decodeAndApplyBaseStationCalibrationData(pulseProcessor_t *state) {
-  bool isDecoded = false;
-
-  if (ootxDecoderProcessBit(&state->ootxDecoder[0], getOotxDataBit(state->v1.currentSync0Width))) {
-    isDecoded = true;
-  }
-  if (ootxDecoderProcessBit(&state->ootxDecoder[1], getOotxDataBit(state->v1.currentSync1Width))) {
-    isDecoded = true;
-  }
-
-  return isDecoded;
+static void printBSInfo(struct ootxDataFrame_s *frame)
+{
+  DEBUG_PRINT("Got calibration from %08X\n", (unsigned int)frame->id);
+  DEBUG_PRINT("  phase0: %f\n", (double)frame->phase0);
+  DEBUG_PRINT("  phase1: %f\n", (double)frame->phase1);
 }
 
-static bool processSync(pulseProcessor_t *state, unsigned int timestamp, unsigned int width, pulseProcessorResult_t* angles, int *baseStation, int *axis, bool* calibDataIsDecoded) {
+static void decodeAndApplyBaseStationCalibrationData(pulseProcessor_t *state) {
+  if (!state->bsCalibration[0].valid &&
+      ootxDecoderProcessBit(&state->ootxDecoder[0], getOotxDataBit(state->v1.currentSync0Width))) {
+    printBSInfo(&state->ootxDecoder[0].frame);
+    lighthouseCalibrationInitFromFrame(&state->bsCalibration[0], &state->ootxDecoder[0].frame);
+  }
+  if (!state->bsCalibration[1].valid &&
+      ootxDecoderProcessBit(&state->ootxDecoder[1], getOotxDataBit(state->v1.currentSync1Width))) {
+    printBSInfo(&state->ootxDecoder[1].frame);
+    lighthouseCalibrationInitFromFrame(&state->bsCalibration[1], &state->ootxDecoder[1].frame);
+  }
+}
+
+static bool processSync(pulseProcessor_t *state, unsigned int timestamp, unsigned int width, pulseProcessorResult_t* angles, int *baseStation, int *axis) {
   bool anglesMeasured = false;
   pulseProcessorV1_t* stateV1 = &state->v1;
 
@@ -297,12 +303,12 @@ static bool processSync(pulseProcessor_t *state, unsigned int timestamp, unsigne
       anglesMeasured = processPreviousFrame(stateV1, angles, baseStation, axis);
 
       if (anglesMeasured) {
-        *calibDataIsDecoded = decodeAndApplyBaseStationCalibrationData(state);
+        decodeAndApplyBaseStationCalibrationData(state);
       }
 
       int baseStation = getBaseStationId(stateV1, timestamp);
 
-      if (baseStation == 1 && stateV1->baseStationsSynchronizedCount < 2) {
+      if (baseStation == 1 && stateV1->basestationsSynchronizedCount < 2) {
         resetSynchronization(stateV1);
       } else {
         storeSyncData(stateV1, baseStation, timestamp, width);
@@ -316,19 +322,20 @@ static bool processSync(pulseProcessor_t *state, unsigned int timestamp, unsigne
   return anglesMeasured;
 }
 
-static bool processWhenSynchronized(pulseProcessor_t *state, int sensor, unsigned int timestamp, unsigned int width, pulseProcessorResult_t* angles, int *baseStation, int *axis, bool* calibDataIsDecoded) {
+static bool processWhenSynchronized(pulseProcessor_t *state, int sensor, unsigned int timestamp, unsigned int width, pulseProcessorResult_t* angles, int *baseStation, int *axis) {
   bool anglesMeasured = false;
 
   if (isSweep(&state->v1, timestamp, width)) {
     storeSweepData(&state->v1, sensor, timestamp);
   } else {
-    anglesMeasured = processSync(state, timestamp, width, angles, baseStation, axis, calibDataIsDecoded);
+    anglesMeasured = processSync(state, timestamp, width, angles, baseStation, axis);
   }
 
   return anglesMeasured;
 }
 
-bool pulseProcessorV1ProcessPulse(pulseProcessor_t *state, const pulseProcessorFrame_t* frameData, pulseProcessorResult_t* angles, int *baseStation, int *axis, bool* calibDataIsDecoded)
+
+bool pulseProcessorV1ProcessPulse(pulseProcessor_t *state, const pulseProcessorFrame_t* frameData, pulseProcessorResult_t* angles, int *baseStation, int *axis)
 {
   bool anglesMeasured = false;
 
@@ -339,7 +346,7 @@ bool pulseProcessorV1ProcessPulse(pulseProcessor_t *state, const pulseProcessorF
       pulseProcessorAllClear(angles);
     }
   } else {
-    anglesMeasured = processWhenSynchronized(state, frameData->sensor, frameData->timestamp, frameData->width, angles, baseStation, axis, calibDataIsDecoded);
+    anglesMeasured = processWhenSynchronized(state, frameData->sensor, frameData->timestamp, frameData->width, angles, baseStation, axis);
     angles->measurementType = lighthouseBsTypeV1;
   }
 
@@ -493,16 +500,16 @@ TESTABLE_STATIC bool getSystemSyncTime(const uint32_t syncTimes[], size_t nSyncT
 }
 
 uint32_t anglesMask = (1 << (PULSE_PROCESSOR_N_SWEEPS * PULSE_PROCESSOR_N_SENSORS)) - 1;
-void pulseProcessorV1ProcessValidAngles(pulseProcessorResult_t* angles, int baseStation) {
-  validAngles &= ~(anglesMask << (baseStation*PULSE_PROCESSOR_N_SWEEPS*PULSE_PROCESSOR_N_SENSORS));
+void pulseProcessorV1ProcessValidAngles(pulseProcessorResult_t* angles, int basestation) {
+  validAngles &= ~(anglesMask << (basestation*PULSE_PROCESSOR_N_SWEEPS*PULSE_PROCESSOR_N_SENSORS));
   for(int sensor=0; sensor!=PULSE_PROCESSOR_N_SENSORS; sensor++) {
-    if(angles->baseStationMeasurementsLh1[baseStation].sensorMeasurements[sensor].validCount != 0) {
-      uint32_t sensorBits = (1 << angles->baseStationMeasurementsLh1[baseStation].sensorMeasurements[sensor].validCount) - 1;
-      validAngles |= sensorBits << (sensor*PULSE_PROCESSOR_N_SWEEPS + baseStation*PULSE_PROCESSOR_N_SWEEPS*PULSE_PROCESSOR_N_SENSORS);
+    if(angles->sensorMeasurementsLh1[sensor].baseStatonMeasurements[basestation].validCount != 0) {
+      uint32_t sensorBits = (1 << angles->sensorMeasurementsLh1[sensor].baseStatonMeasurements[basestation].validCount) - 1;
+      validAngles |= sensorBits << (sensor*PULSE_PROCESSOR_N_SWEEPS + basestation*PULSE_PROCESSOR_N_SWEEPS*PULSE_PROCESSOR_N_SENSORS);
     }
   }
 }
 
 uint8_t pulseProcessorV1AnglesQuality() {
-  return __builtin_popcount(validAngles)*1.0/(PULSE_PROCESSOR_N_SWEEPS*PULSE_PROCESSOR_N_SENSORS*CONFIG_DECK_LIGHTHOUSE_MAX_N_BS)*255;
+  return __builtin_popcount(validAngles)*1.0/(PULSE_PROCESSOR_N_SWEEPS*PULSE_PROCESSOR_N_SENSORS*PULSE_PROCESSOR_N_BASE_STATIONS)*255;
 }

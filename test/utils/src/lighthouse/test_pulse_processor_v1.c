@@ -1,5 +1,3 @@
-// @IGNORE_IF_NOT CONFIG_DECK_LIGHTHOUSE
-
 // File under test pulse_processor_v1.c
 #include "pulse_processor_v1.h"
 

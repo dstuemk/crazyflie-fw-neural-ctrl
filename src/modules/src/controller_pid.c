@@ -1,7 +1,9 @@
 
+#include "stabilizer.h"
 #include "stabilizer_types.h"
 
 #include "attitude_controller.h"
+#include "sensfusion6.h"
 #include "position_controller.h"
 #include "controller_pid.h"
 
@@ -9,7 +11,12 @@
 #include "param.h"
 #include "math3d.h"
 
+#include "neural_control.h"
+#include "debug.h"
+
 #define ATTITUDE_UPDATE_DT    (float)(1.0f/ATTITUDE_RATE)
+
+static bool tiltCompensationEnabled = false;
 
 static attitude_t attitudeDesired;
 static attitude_t rateDesired;
@@ -23,6 +30,12 @@ static float r_roll;
 static float r_pitch;
 static float r_yaw;
 static float accelz;
+
+// static bool ratePidBypass = false;
+static float desired_roll_rate;
+static float desired_pitch_rate;
+static float desired_yaw_rate;
+
 
 void controllerPidInit(void)
 {
@@ -61,28 +74,9 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
   if (RATE_DO_EXECUTE(ATTITUDE_RATE, tick)) {
     // Rate-controled YAW is moving YAW angle setpoint
     if (setpoint->mode.yaw == modeVelocity) {
-      attitudeDesired.yaw = capAngle(attitudeDesired.yaw + setpoint->attitudeRate.yaw * ATTITUDE_UPDATE_DT);
-       
-      float yawMaxDelta = attitudeControllerGetYawMaxDelta();
-      if (yawMaxDelta != 0.0f)
-      {
-      float delta = capAngle(attitudeDesired.yaw-state->attitude.yaw);
-      // keep the yaw setpoint within +/- yawMaxDelta from the current yaw
-        if (delta > yawMaxDelta)
-        {
-          attitudeDesired.yaw = state->attitude.yaw + yawMaxDelta;
-        }
-        else if (delta < -yawMaxDelta)
-        {
-          attitudeDesired.yaw = state->attitude.yaw - yawMaxDelta;
-        }
-      }
-    } else if (setpoint->mode.yaw == modeAbs) {
+       attitudeDesired.yaw += setpoint->attitudeRate.yaw * ATTITUDE_UPDATE_DT;
+    } else {
       attitudeDesired.yaw = setpoint->attitude.yaw;
-    } else if (setpoint->mode.quat == modeAbs) {
-      struct quat setpoint_quat = mkquat(setpoint->attitudeQuaternion.x, setpoint->attitudeQuaternion.y, setpoint->attitudeQuaternion.z, setpoint->attitudeQuaternion.w);
-      struct vec rpy = quat2rpy(setpoint_quat);
-      attitudeDesired.yaw = degrees(rpy.z);
     }
 
     attitudeDesired.yaw = capAngle(attitudeDesired.yaw);
@@ -119,8 +113,35 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
     }
 
     // TODO: Investigate possibility to subtract gyro drift.
-    attitudeControllerCorrectRatePID(sensors->gyro.x, -sensors->gyro.y, sensors->gyro.z,
-                             rateDesired.roll, rateDesired.pitch, rateDesired.yaw);
+
+
+    //neuralControlTaskPeekRatePidBypass(&ratePidBypass);
+
+    // TODO Mathias: 
+    //    -> if(setpoint->thrust!=0) for AttitudeRate Control  
+    //    -> if(flase) for Attitude Control  
+    if(setpoint->thrust!=0)
+    {
+      // get values from NN
+      control->thrust = setpoint->thrust;
+      desired_roll_rate = setpoint->attitudeRate.roll;
+      desired_pitch_rate = -setpoint->attitudeRate.pitch;  // Flip desired pitch
+      desired_yaw_rate = setpoint->attitudeRate.yaw;
+
+      //DEBUG_PRINT("ratePidBypass active: %f %f %f %f \n", (double) control->thrust, (double) desired_roll_rate, (double) desired_pitch_rate, (double) desired_yaw_rate);
+
+      attitudeControllerCorrectRatePID(sensors->gyro.x, -sensors->gyro.y, sensors->gyro.z,
+                              desired_roll_rate, desired_pitch_rate, desired_yaw_rate);
+    }else
+    {
+      attitudeControllerCorrectRatePID(sensors->gyro.x, -sensors->gyro.y, sensors->gyro.z,
+                              rateDesired.roll, rateDesired.pitch, rateDesired.yaw);
+    }
+
+
+
+    // attitudeControllerCorrectRatePID(sensors->gyro.x, -sensors->gyro.y, sensors->gyro.z,
+    //                          rateDesired.roll, rateDesired.pitch, rateDesired.yaw);
 
     attitudeControllerGetActuatorOutput(&control->roll,
                                         &control->pitch,
@@ -138,7 +159,14 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
     accelz = sensors->acc.z;
   }
 
-  control->thrust = actuatorThrust;
+  if (tiltCompensationEnabled)
+  {
+    control->thrust = actuatorThrust / sensfusion6GetInvThrustCompensationForTilt();
+  }
+  else
+  {
+    control->thrust = actuatorThrust;
+  }
 
   if (control->thrust == 0)
   {
@@ -160,69 +188,25 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
   }
 }
 
-/**
- * Logging variables for the command and reference signals for the
- * altitude PID controller
- */
+
 LOG_GROUP_START(controller)
-/**
- * @brief Thrust command
- */
 LOG_ADD(LOG_FLOAT, cmd_thrust, &cmd_thrust)
-/**
- * @brief Roll command
- */
 LOG_ADD(LOG_FLOAT, cmd_roll, &cmd_roll)
-/**
- * @brief Pitch command
- */
 LOG_ADD(LOG_FLOAT, cmd_pitch, &cmd_pitch)
-/**
- * @brief yaw command
- */
 LOG_ADD(LOG_FLOAT, cmd_yaw, &cmd_yaw)
-/**
- * @brief Gyro roll measurement in radians
- */
 LOG_ADD(LOG_FLOAT, r_roll, &r_roll)
-/**
- * @brief Gyro pitch measurement in radians
- */
 LOG_ADD(LOG_FLOAT, r_pitch, &r_pitch)
-/**
- * @brief Yaw  measurement in radians
- */
 LOG_ADD(LOG_FLOAT, r_yaw, &r_yaw)
-/**
- * @brief Acceleration in the zaxis in G-force
- */
 LOG_ADD(LOG_FLOAT, accelz, &accelz)
-/**
- * @brief Thrust command without (tilt)compensation
- */
 LOG_ADD(LOG_FLOAT, actuatorThrust, &actuatorThrust)
-/**
- * @brief Desired roll setpoint
- */
 LOG_ADD(LOG_FLOAT, roll,      &attitudeDesired.roll)
-/**
- * @brief Desired pitch setpoint
- */
 LOG_ADD(LOG_FLOAT, pitch,     &attitudeDesired.pitch)
-/**
- * @brief Desired yaw setpoint
- */
 LOG_ADD(LOG_FLOAT, yaw,       &attitudeDesired.yaw)
-/**
- * @brief Desired roll rate setpoint
- */
 LOG_ADD(LOG_FLOAT, rollRate,  &rateDesired.roll)
-/**
- * @brief Desired pitch rate setpoint
- */
 LOG_ADD(LOG_FLOAT, pitchRate, &rateDesired.pitch)
-/**
- * @brief Desired yaw rate setpoint
- */
 LOG_ADD(LOG_FLOAT, yawRate,   &rateDesired.yaw)
 LOG_GROUP_STOP(controller)
+
+PARAM_GROUP_START(controller)
+PARAM_ADD(PARAM_UINT8, tiltComp, &tiltCompensationEnabled)
+PARAM_GROUP_STOP(controller)

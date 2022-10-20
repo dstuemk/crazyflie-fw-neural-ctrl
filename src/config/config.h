@@ -7,7 +7,7 @@
  *
  * Crazyflie control firmware
  *
- * Copyright (C) 2011-2022 Bitcraze AB
+ * Copyright (C) 2011-2012 Bitcraze AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -46,38 +46,41 @@
 #include "trace.h"
 #include "usec_time.h"
 
-#define PROTOCOL_VERSION 5
+#define PROTOCOL_VERSION 4
 
-#define CONFIG_BLOCK_ADDRESS    (2048 * (64-1))
-#define MCU_ID_ADDRESS          0x1FFF7A10
-#define MCU_FLASH_SIZE_ADDRESS  0x1FFF7A22
-#ifndef FREERTOS_HEAP_SIZE
-  #define FREERTOS_HEAP_SIZE      30000
+#ifdef STM32F4XX
+  #define QUAD_FORMATION_X
+
+  #define CONFIG_BLOCK_ADDRESS    (2048 * (64-1))
+  #define MCU_ID_ADDRESS          0x1FFF7A10
+  #define MCU_FLASH_SIZE_ADDRESS  0x1FFF7A22
+  #ifndef FREERTOS_HEAP_SIZE
+    #define FREERTOS_HEAP_SIZE      30000
+  #endif
+  #define FREERTOS_MIN_STACK_SIZE 150       // M4-FPU register setup is bigger so stack needs to be bigger
+  #define FREERTOS_MCU_CLOCK_HZ   168000000
+
+  #define configGENERATE_RUN_TIME_STATS 1
+  #define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS() initUsecTimer()
+  #define portGET_RUN_TIME_COUNTER_VALUE() usecTimestamp()
 #endif
-#define FREERTOS_MIN_STACK_SIZE 150       // M4-FPU register setup is bigger so stack needs to be bigger
-#define FREERTOS_MCU_CLOCK_HZ   168000000
-
-#define configGENERATE_RUN_TIME_STATS 1
-#define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS() initUsecTimer()
-#define portGET_RUN_TIME_COUNTER_VALUE() usecTimestamp()
 
 
 // Task priorities. Higher number higher priority
-#define PASSTHROUGH_TASK_PRI    5
-#define STABILIZER_TASK_PRI     5
+#define STABILIZER_TASK_PRI     4
 #define SENSORS_TASK_PRI        4
 #define ADC_TASK_PRI            3
 #define FLOW_TASK_PRI           3
 #define MULTIRANGER_TASK_PRI    3
 #define SYSTEM_TASK_PRI         2
-#define CRTP_TX_TASK_PRI        2
-#define CRTP_RX_TASK_PRI        2
+#define CRTP_TX_TASK_PRI        2 /*2*/
+#define CRTP_RX_TASK_PRI        2 /*2*/
 #define EXTRX_TASK_PRI          2
 #define ZRANGER_TASK_PRI        2
 #define ZRANGER2_TASK_PRI       2
-#define LOG_TASK_PRI            1
-#define MEM_TASK_PRI            1
-#define PARAM_TASK_PRI          1
+#define LOG_TASK_PRI            6
+#define MEM_TASK_PRI            6
+#define PARAM_TASK_PRI          6
 #define PROXIMITY_TASK_PRI      0
 #define PM_TASK_PRI             0
 #define USDLOG_TASK_PRI         1
@@ -93,14 +96,16 @@
 #define UART2_TEST_TASK_PRI     1
 #define KALMAN_TASK_PRI         2
 #define LEDSEQCMD_TASK_PRI      1
-#define FLAPPERDECK_TASK_PRI    2
+
 #define SYSLINK_TASK_PRI        3
 #define USBLINK_TASK_PRI        3
 #define ACTIVE_MARKER_TASK_PRI  3
-#define AI_DECK_TASK_PRI        1
+#define AI_DECK_TASK_PRI        3
 #define UART2_TASK_PRI          3
-#define CRTP_SRV_TASK_PRI       0
-#define PLATFORM_SRV_TASK_PRI   0
+
+//#define NEURALCOM_TASK_PRI      1
+#define NEURALCONTROL_TASK_PRI  5
+#define REMOTECONTROL_TASK_PRI  5
 
 // Not compiled
 #if 0
@@ -147,18 +152,11 @@
 #define KALMAN_TASK_NAME        "KALMAN"
 #define ACTIVE_MARKER_TASK_NAME "ACTIVEMARKER-DECK"
 #define AI_DECK_GAP_TASK_NAME   "AI-DECK-GAP"
-#define AIDECK_ESP_TX_TASK_NAME "AI-DECK ESP TX"
-#define AIDECK_ESP_RX_TASK_NAME "AI-DECK ESP RX"
+#define AI_DECK_NINA_TASK_NAME  "AI-DECK-NINA"
 #define UART2_TASK_NAME         "UART2"
-#define CRTP_SRV_TASK_NAME      "CRTP-SRV"
-#define PLATFORM_SRV_TASK_NAME  "PLATFORM-SRV"
-#define PASSTHROUGH_TASK_NAME   "PASSTHROUGH"
-#define CPX_RT_UART_TASK_NAME   "ROUTER FROM UART2"
-#define CPX_RT_INT_TASK_NAME    "ROUTER FROM INTERNAL"
-#define CPX_TASK_NAME           "CPX"
-#define APP_TASK_NAME           "APP"
-#define FLAPPERDECK_TASK_NAME   "FLAPPERDECK"
-
+//#define NEURALCOM_TASK_NAME     "NEURALCOM"
+#define NEURALCONTROL_TASK_NAME "NEURALCONTROL"
+#define REMOTECONTROL_TASK_NAME "REMOTECONTROL"
 
 //Task stack sizes
 #define SYSTEM_TASK_STACKSIZE         (2* configMINIMAL_STACK_SIZE)
@@ -170,7 +168,7 @@
 #define CRTP_RXTX_TASK_STACKSIZE      configMINIMAL_STACK_SIZE
 #define LOG_TASK_STACKSIZE            (2 * configMINIMAL_STACK_SIZE)
 #define MEM_TASK_STACKSIZE            (2 * configMINIMAL_STACK_SIZE)
-#define PARAM_TASK_STACKSIZE          (2 * configMINIMAL_STACK_SIZE)
+#define PARAM_TASK_STACKSIZE          configMINIMAL_STACK_SIZE
 #define SENSORS_TASK_STACKSIZE        (2 * configMINIMAL_STACK_SIZE)
 #define STABILIZER_TASK_STACKSIZE     (3 * configMINIMAL_STACK_SIZE)
 #define NRF24LINK_TASK_STACKSIZE      configMINIMAL_STACK_SIZE
@@ -191,18 +189,9 @@
 #define ACTIVEMARKER_TASK_STACKSIZE   configMINIMAL_STACK_SIZE
 #define AI_DECK_TASK_STACKSIZE        configMINIMAL_STACK_SIZE
 #define UART2_TASK_STACKSIZE          configMINIMAL_STACK_SIZE
-#define CRTP_SRV_TASK_STACKSIZE       configMINIMAL_STACK_SIZE
-#define PLATFORM_SRV_TASK_STACKSIZE   configMINIMAL_STACK_SIZE
-#define PASSTHROUGH_TASK_STACKSIZE    configMINIMAL_STACK_SIZE
-#define BQ_OSD_TASK_STACKSIZE         configMINIMAL_STACK_SIZE
-#define GTGPS_DECK_TASK_STACKSIZE     configMINIMAL_STACK_SIZE
-#define UART1_TEST_TASK_STACKSIZE     configMINIMAL_STACK_SIZE
-#define UART2_TEST_TASK_STACKSIZE     configMINIMAL_STACK_SIZE
-#define LIGHTHOUSE_TASK_STACKSIZE     (2 * configMINIMAL_STACK_SIZE)
-#define LPS_DECK_STACKSIZE            (3 * configMINIMAL_STACK_SIZE)
-#define OA_DECK_TASK_STACKSIZE        (2 * configMINIMAL_STACK_SIZE)
-#define KALMAN_TASK_STACKSIZE         (3 * configMINIMAL_STACK_SIZE)
-#define FLAPPERDECK_TASK_STACKSIZE    (2 * configMINIMAL_STACK_SIZE)
+//#define NEURALCOM_TASK_STACKSIZE      (10 * configMINIMAL_STACK_SIZE)
+#define NEURALCONTROL_TASK_STACKSIZE  (70 * configMINIMAL_STACK_SIZE)
+#define REMOTECONTROL_TASK_STACKSIZE  (10 * configMINIMAL_STACK_SIZE)
 
 //The radio channel. From 0 to 125
 #define RADIO_CHANNEL 80
@@ -217,12 +206,10 @@
 #define PROPELLER_BALANCE_TEST_THRESHOLD  2.5f
 
 /**
- * \def BAT_LOADING_SAG_THESHOLD
- * This is the threshold for a battery and connector to pass. It loads the power path by spinning all 4 motors
- * and measure the voltage sag. The threshold is very experimental and dependent on stock configuration. It is
- * fairly constant over the battery voltage range but testing with fully changed battery is best.
+ * \def ACTIVATE_AUTO_SHUTDOWN
+ * Will automatically shot of system if no radio activity
  */
-#define BAT_LOADING_SAG_THRESHOLD  0.95f
+//#define ACTIVATE_AUTO_SHUTDOWN
 
 /**
  * \def ACTIVATE_STARTUP_SOUND

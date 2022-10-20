@@ -6,11 +6,13 @@
 
 #include "mac.h"
 
-#include "autoconf.h"
-
 extern uwbAlgorithm_t uwbTdoa2TagAlgorithm;
 
-#define LOCODECK_NR_OF_TDOA2_ANCHORS CONFIG_DECK_LOCO_NR_OF_ANCHORS
+#ifdef LOCODECK_NR_OF_ANCHORS
+#define LOCODECK_NR_OF_TDOA2_ANCHORS LOCODECK_NR_OF_ANCHORS
+#else
+#define LOCODECK_NR_OF_TDOA2_ANCHORS 8
+#endif
 
 typedef struct {
   const locoAddress_t anchorAddress[LOCODECK_NR_OF_TDOA2_ANCHORS];

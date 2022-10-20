@@ -22,7 +22,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
  *
- * appchanel_test.c: Demonstrate the appchanel functionality
+ * appchanel_test.c: Demonstrate the appchanel functionality 
  */
 
 #include "app.h"
@@ -50,7 +50,7 @@ void appMain()
   struct testPacketTX txPacket;
 
   while(1) {
-    if (appchannelReceiveDataPacket(&rxPacket, sizeof(rxPacket), APPCHANNEL_WAIT_FOREVER)) {
+    if (appchannelReceivePacket(&rxPacket, sizeof(rxPacket), APPCHANNEL_WAIT_FOREVER)) {
 
       DEBUG_PRINT("App channel received x: %f, y: %f, z: %f\n", (double)rxPacket.x, (double)rxPacket.y, (double)rxPacket.z);
 
@@ -58,7 +58,7 @@ void appMain()
       txPacket.sum += rxPacket.y;
       txPacket.sum += rxPacket.z;
 
-      appchannelSendDataPacketBlock(&txPacket, sizeof(txPacket));
+      appchannelSendPacket(&txPacket, sizeof(txPacket));
     }
   }
 }

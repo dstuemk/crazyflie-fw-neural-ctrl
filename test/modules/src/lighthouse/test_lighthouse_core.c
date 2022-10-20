@@ -1,5 +1,3 @@
-// @IGNORE_IF_NOT CONFIG_DECK_LIGHTHOUSE
-
 // File under test lighthouse_core.c
 #include "lighthouse_core.h"
 
@@ -8,15 +6,13 @@
 #include "mock_pulse_processor.h"
 #include "mock_pulse_processor_v1.h"
 #include "mock_pulse_processor_v2.h"
-#include "mock_lighthouse_transmit.h"
 #include "mock_lighthouse_deck_flasher.h"
 #include "mock_lighthouse_position_est.h"
-#include "mock_lighthouse_calibration.h"
 #include "mock_uart1.h"
 #include "mock_statsCnt.h"
+#include "mock_storage.h"
 #include "mock_cfassert.h"
 #include "mock_crtp_localization_service.h"
-#include "mock_lighthouse_storage.h"
 
 #include <stdbool.h>
 
@@ -29,14 +25,8 @@ static lighthouseUartFrame_t frame;
 
 extern pulseProcessor_t lighthouseCoreState;
 
-// Functions under test
-void waitForUartSynchFrame();
-bool getUartFrameRaw(lighthouseUartFrame_t *frame);
-lighthouseBaseStationType_t identifyBaseStationType(const lighthouseUartFrame_t* frame, lighthouseBsIdentificationData_t* state);
-
-// Dummy mocks timer
+// Dummy mock
 uint32_t xTaskGetTickCount() {return 0;}
-void vTaskDelay(const uint32_t ignore) {}
 
 static int nrOfCallsToStorageFetchForCalib = 0;
 static size_t mockStorageFetchForCalib(char* key, void* buffer, size_t length, int cmock_num_calls);
@@ -210,7 +200,7 @@ void testThatLackOfChannelIsDecodedInUartFrame() {
 
   // Verify we did not get data in other fields
   TEST_ASSERT_EQUAL_UINT8(0, frame.data.channel);
-  TEST_ASSERT_FALSE(frame.data.slowBit);
+  TEST_ASSERT_FALSE(frame.data.slowbit);
 }
 
 
@@ -228,7 +218,7 @@ void testThatChannelIsDecodedInUartFrame() {
 
   // Verify we did not get data in other fields
   TEST_ASSERT_TRUE(frame.data.channelFound);
-  TEST_ASSERT_FALSE(frame.data.slowBit);
+  TEST_ASSERT_FALSE(frame.data.slowbit);
 }
 
 
@@ -242,14 +232,178 @@ void testThatSlowBitIsDecodedInUartFrame() {
   getUartFrameRaw(&frame);
 
   // Assert
-  TEST_ASSERT_TRUE(frame.data.slowBit);
+  TEST_ASSERT_TRUE(frame.data.slowbit);
 
   // Verify we did not get data in other fields
   TEST_ASSERT_TRUE(frame.data.channelFound);
   TEST_ASSERT_EQUAL_UINT8(0, frame.data.channel);
 }
 
+
+void testThatBaseStationIdentificationReturnsUnknownType() {
+  // Fixture
+  lighthouseBsIdentificationData_t bsIdentificationData;
+  memset(&bsIdentificationData, 0, sizeof(bsIdentificationData));
+  lighthouseBaseStationType_t expected = lighthouseBsTypeUnknown;
+
+  // Test
+  lighthouseBaseStationType_t actual = identifyBaseStationType(&frame, &bsIdentificationData);
+
+  // Assert
+  TEST_ASSERT_EQUAL(expected, actual);
+}
+
+
+void testThatBaseStationIdentificationFindsV1() {
+  // Fixture
+  lighthouseBsIdentificationData_t bsIdentificationData;
+  memset(&bsIdentificationData, 0, sizeof(bsIdentificationData));
+  lighthouseBaseStationType_t expected = lighthouseBsTypeV1;
+
+  // Test
+  frame.data.beamData = 0x1ffff;
+
+  lighthouseBaseStationType_t actual = lighthouseBsTypeUnknown;
+  for (int i = 0; (i < 30) && (actual == lighthouseBsTypeUnknown); i++) {
+      actual = identifyBaseStationType(&frame, &bsIdentificationData);
+  }
+
+  // Assert
+  TEST_ASSERT_EQUAL(expected, actual);
+}
+
+
+void testThatBaseStationIdentificationFindsV2() {
+  // Fixture
+  lighthouseBsIdentificationData_t bsIdentificationData;
+  memset(&bsIdentificationData, 0, sizeof(bsIdentificationData));
+  lighthouseBaseStationType_t expected = lighthouseBsTypeV2;
+
+  // Test
+  frame.data.beamData = 4711;
+
+  lighthouseBaseStationType_t actual = lighthouseBsTypeUnknown;
+  for (int i = 0; (i < 30) && (actual == lighthouseBsTypeUnknown); i++) {
+      actual = identifyBaseStationType(&frame, &bsIdentificationData);
+  }
+
+  // Assert
+  TEST_ASSERT_EQUAL(expected, actual);
+}
+
+void testThatGeoDataIsWrittenToStorage() {
+  // Fixture
+  storageStore_ExpectAndReturn("lh/sys/0/geo/1", &lighthouseCoreState.bsGeometry[1], sizeof(baseStationGeometry_t), true);
+
+  // Test
+  bool actual = lighthouseCorePersistData(1, true, false);
+
+  // Actual
+  TEST_ASSERT_TRUE(actual);
+}
+
+void testThatFailedGeoDataWriteToStorageReturnsFailure() {
+  // Fixture
+  storageStore_IgnoreAndReturn(false);
+
+  // Test
+  bool actual = lighthouseCorePersistData(1, true, false);
+
+  // Actual
+  TEST_ASSERT_FALSE(actual);
+}
+
+void testThatCalibDataIsWrittenToStorage() {
+  // Fixture
+  storageStore_ExpectAndReturn("lh/sys/0/cal/1", &lighthouseCoreState.bsCalibration[1], sizeof(lighthouseCalibration_t), true);
+
+  // Test
+  bool actual = lighthouseCorePersistData(1, false, true);
+
+  // Actual
+  TEST_ASSERT_TRUE(actual);
+}
+
+void testThatFailedCalibDataWriteToStorageReturnsFailure() {
+  // Fixture
+  storageStore_IgnoreAndReturn(false);
+
+  // Test
+  bool actual = lighthouseCorePersistData(1, false, true);
+
+  // Actual
+  TEST_ASSERT_FALSE(actual);
+}
+
+void testThatNoInitializationOfGeoIsDoneWhenStorageIsEmpty() {
+  // Fixture
+  storageFetch_IgnoreAndReturn(0);
+
+  // Test
+  initializeGeoDataFromStorage();
+
+  // Actual
+  // Verified in mocks
+}
+
+void testInitializationOfGeoIsDoneFromStorage() {
+  // Fixture
+  int geoSize = sizeof(baseStationGeometry_t);
+  const void* ignored = 0;
+
+  for (int i = 0; i < PULSE_PROCESSOR_N_BASE_STATIONS; i++) {
+    storageFetch_ExpectAndReturn("Ignored", ignored, geoSize, geoSize);
+    storageFetch_IgnoreArg_key();
+    storageFetch_IgnoreArg_buffer();
+
+    lighthousePositionSetGeometryData_Expect(i, ignored);
+    lighthousePositionSetGeometryData_IgnoreArg_geometry();
+  }
+
+  // Test
+  initializeGeoDataFromStorage();
+
+  // Actual
+  // Verified in mocks
+}
+
+void testThatNoInitializationOfCalibIsDoneWhenStorageIsEmpty() {
+  // Fixture
+  for (int i = 0; i < PULSE_PROCESSOR_N_BASE_STATIONS; i++) {
+    lighthouseCoreState.bsCalibration[i].valid = false;
+  }
+
+  storageFetch_IgnoreAndReturn(0);
+
+  // Test
+  initializeCalibDataFromStorage();
+
+  // Actual
+  for (int i = 0; i < PULSE_PROCESSOR_N_BASE_STATIONS; i++) {
+    TEST_ASSERT_FALSE(lighthouseCoreState.bsCalibration[i].valid);
+  }
+}
+
+void testInitializationOfCalibIsDoneFromStorage() {
+  // Fixture
+  for (int i = 0; i < PULSE_PROCESSOR_N_BASE_STATIONS; i++) {
+    lighthouseCoreState.bsCalibration[i].valid = false;
+  }
+
+  for (int i = 0; i < PULSE_PROCESSOR_N_BASE_STATIONS; i++) {
+    storageFetch_StubWithCallback(mockStorageFetchForCalib);
+  }
+
+  // Test
+  initializeCalibDataFromStorage();
+
+  // Actual
+  for (int i = 0; i < PULSE_PROCESSOR_N_BASE_STATIONS; i++) {
+    TEST_ASSERT_TRUE(lighthouseCoreState.bsCalibration[i].valid);
+  }
+}
 // Test support ----------------------------------------------------------------------------------------------------
+
 static void uart1ReadCallback(char* ch, int cmock_num_calls) {
     if (uart1BytesRead >= uart1SequenceLength) {
         TEST_FAIL_MESSAGE("Too many bytes read from uart1");
@@ -259,16 +413,27 @@ static void uart1ReadCallback(char* ch, int cmock_num_calls) {
     uart1BytesRead++;
 }
 
-static bool uart1GetDataWithTimeoutCallback(char* ch, const uint32_t timeoutTicks, int cmock_num_calls) {
-    uart1ReadCallback(ch, cmock_num_calls);
-    return true;
-}
-
 static void uart1SetSequence(char* sequence, int length) {
     uart1BytesRead = 0;
     uart1Sequence = sequence;
     uart1SequenceLength = length;
 
     uart1Getchar_StubWithCallback(uart1ReadCallback);
-    uart1GetDataWithTimeout_StubWithCallback(uart1GetDataWithTimeoutCallback);
+}
+
+static size_t mockStorageFetchForCalib(char* key, void* buffer, size_t length, int cmock_num_calls) {
+  nrOfCallsToStorageFetchForCalib = cmock_num_calls;
+
+  char* expectedKey[20];
+  sprintf(expectedKey, "lh/sys/0/cal/%u", cmock_num_calls);
+  TEST_ASSERT_EQUAL_STRING(expectedKey, key);
+
+  const size_t calibSize = sizeof(lighthouseCalibration_t);
+  TEST_ASSERT_EQUAL(calibSize, length);
+
+  // Emulate calib data with valid == true that can be used for validation
+  lighthouseCalibration_t* calibData = (lighthouseCalibration_t*) buffer;
+  calibData->valid = true;
+
+  return calibSize;
 }

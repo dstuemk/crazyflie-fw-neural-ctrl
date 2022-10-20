@@ -29,6 +29,7 @@
 #define LH_BOOTLOADER_H
 
 #include <stdbool.h>
+#include "i2cdev.h"
 
 /**
  * @brief Address of the firmware in the flash
@@ -38,10 +39,11 @@
 
 /**
  * Initialize the i2c lighthouse module
+ * @param i2cPort  I2C port (a CPAL_InitTypeDef) the lighthouse is connected to.
  *
  * @return True on success, else false.
  */
-bool lhblInit();
+bool lhblInit(I2C_Dev *i2cPort);
 
 /**
  * Boot lighthouse to firmware.
@@ -67,20 +69,6 @@ bool lhblGetVersion(uint8_t *version);
  * @return True on success, else false.
  */
 bool lhblFlashRead(uint32_t address, uint16_t length, uint8_t *data);
-
-/**
- * @brief Write up to one page of data into the lighthouse SPI
- * 
- * This function should be used on memory address that have already been erased.
- * The write operation cannot cross the memory page boundary (256 bytes pages)
- * 
- * @param address Flash address to write the data to
- * @param length Length of the data buffer
- * @param data Data buffer to write
- * @return true in case of success
- * @return false in case of failure
- */
-bool lhblFlashWritePage(uint32_t address, uint16_t length, const uint8_t *data);
 
 /**
  * Write FW data to lighthouse spi flash.

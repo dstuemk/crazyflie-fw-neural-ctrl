@@ -119,10 +119,5 @@ static void timerHandler(xTimerHandle timer) {
 
 
 PARAM_GROUP_START(system)
-
-/**
- * @brief Set to nonzero to dump CPU and stack usage to console
- */
-PARAM_ADD_CORE(PARAM_UINT8, taskDump, &triggerDump)
-
+PARAM_ADD(PARAM_UINT8, taskDump, &triggerDump)
 PARAM_GROUP_STOP(system)

@@ -25,12 +25,10 @@
 
 
 #include <string.h>
-#include <stdlib.h>
 
 #include "FreeRTOS.h"
 #include "task.h"
 
-#include "autoconf.h"
 #include "log.h"
 #include "param.h"
 #include "lpsTdoa2Tag.h"
@@ -89,7 +87,6 @@ static float logClockCorrection[LOCODECK_NR_OF_TDOA2_ANCHORS];
 static uint16_t logAnchorDistance[LOCODECK_NR_OF_TDOA2_ANCHORS];
 
 static bool rangingOk;
-static float stdDev = TDOA_ENGINE_MEASUREMENT_NOISE_STD;
 
 // The default receive time in the anchors for messages from other anchors is 0
 // and is overwritten with the actual receive time when a packet arrives.
@@ -277,22 +274,19 @@ static uint32_t onEvent(dwDevice_t *dev, uwbEvent_t event) {
 }
 
 
-static void sendTdoaToEstimatorCallback(tdoaMeasurement_t* tdoaMeasurement) {
-  // Override the default standard deviation set by the TDoA engine.
-  tdoaMeasurement->stdDev = stdDev;
-
+static void sendTdoaToEstimatorCallback(tdoaMeasurement_t* tdoaMeasurement, const uint8_t idA, const uint8_t idB) {
   estimatorEnqueueTDOA(tdoaMeasurement);
 
-  #ifdef CONFIG_DECK_LOCO_2D_POSITION
+  #ifdef LPS_2D_POSITION_HEIGHT
+  // If LPS_2D_POSITION_HEIGHT is defined we assume that we are doing 2D positioning.
+  // LPS_2D_POSITION_HEIGHT contains the height (Z) that the tag will be located at
   heightMeasurement_t heightData;
   heightData.timestamp = xTaskGetTickCount();
-  heightData.height = DECK_LOCO_2D_POSITION_HEIGHT;
+  heightData.height = LPS_2D_POSITION_HEIGHT;
   heightData.stdDev = 0.0001;
   estimatorEnqueueAbsoluteHeight(&heightData);
   #endif
 
-  const uint8_t idA = tdoaMeasurement->anchorIds[0];
-  const uint8_t idB = tdoaMeasurement->anchorIds[1];
   if (isConsecutiveIds(idA, idB)) {
     logUwbTdoaDistDiff[idB] = tdoaMeasurement->distanceDiff;
   }
@@ -396,11 +390,3 @@ LOG_ADD(LOG_UINT16, dist4-5, &logAnchorDistance[5])
 LOG_ADD(LOG_UINT16, dist5-6, &logAnchorDistance[6])
 LOG_ADD(LOG_UINT16, dist6-7, &logAnchorDistance[7])
 LOG_GROUP_STOP(tdoa2)
-
-PARAM_GROUP_START(tdoa2)
-/**
- * @brief The measurement noise to use when sending TDoA measurements to the estimator.
- */
-PARAM_ADD(PARAM_FLOAT, stddev, &stdDev)
-
-PARAM_GROUP_STOP(tdoa2)

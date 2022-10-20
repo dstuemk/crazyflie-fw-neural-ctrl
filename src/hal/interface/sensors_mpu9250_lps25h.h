@@ -7,7 +7,7 @@
  *
  * Crazyflie control firmware
  *
- * Copyright (C) 2018-2021 Bitcraze AB
+ * Copyright (C) 2018 Bitcraze AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,7 +23,8 @@
  *
  */
 
-#pragma once
+#ifndef __SENSORS_MPU9250_LPS25H_H__
+#define __SENSORS_MPU9250_LPS25H_H__
 
 #include "sensors.h"
 
@@ -38,3 +39,5 @@ bool sensorsMpu9250Lps25hReadAcc(Axis3f *acc);
 bool sensorsMpu9250Lps25hReadMag(Axis3f *mag);
 bool sensorsMpu9250Lps25hReadBaro(baro_t *baro);
 void sensorsMpu9250Lps25hSetAccMode(accModes accMode);
+
+#endif // __SENSORS_MPU9250_LPS25H_H__

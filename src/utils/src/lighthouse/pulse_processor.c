@@ -30,7 +30,6 @@
 #include "pulse_processor_v1.h"
 #include "pulse_processor_v2.h"
 #include "cf_math.h"
-#include "autoconf.h"
 
 
 /**
@@ -41,55 +40,53 @@
  * @param angles The raw and calibrated angles
  * @param baseStation The base station in question
  */
-bool pulseProcessorApplyCalibration(pulseProcessor_t *state, pulseProcessorResult_t* angles, int baseStation){
+void pulseProcessorApplyCalibration(pulseProcessor_t *state, pulseProcessorResult_t* angles, int baseStation){
   const lighthouseCalibration_t* calibrationData = &state->bsCalibration[baseStation];
   const bool doApplyCalibration = calibrationData->valid;
 
-  pulseProcessorBaseStationMeasurement_t* bsMeasurement = &angles->baseStationMeasurementsLh1[baseStation];
+  pulseProcessorSensorMeasurement_t* sensorMeasurements = angles->sensorMeasurementsLh1;
   if (lighthouseBsTypeV2 == angles->measurementType) {
-    bsMeasurement = &angles->baseStationMeasurementsLh2[baseStation];
+    sensorMeasurements = angles->sensorMeasurementsLh2;
   }
 
   for (int sensor = 0; sensor < PULSE_PROCESSOR_N_SENSORS; sensor++) {
-    pulseProcessorSensorMeasurement_t* measurement = &bsMeasurement->sensorMeasurements[sensor];
+    pulseProcessorBaseStationMeasuremnt_t* bsMeasurement = &sensorMeasurements[sensor].baseStatonMeasurements[baseStation];
     if (doApplyCalibration) {
       if (lighthouseBsTypeV2 == angles->measurementType) {
-        lighthouseCalibrationApplyV2(calibrationData, measurement->angles, measurement->correctedAngles);
+        lighthouseCalibrationApplyV2(calibrationData, bsMeasurement->angles, bsMeasurement->correctedAngles);
       } else {
-        lighthouseCalibrationApplyV1(calibrationData, measurement->angles, measurement->correctedAngles);
+        lighthouseCalibrationApplyV1(calibrationData, bsMeasurement->angles, bsMeasurement->correctedAngles);
       }
     } else {
-      lighthouseCalibrationApplyNothing(measurement->angles, measurement->correctedAngles);
+      lighthouseCalibrationApplyNothing(bsMeasurement->angles, bsMeasurement->correctedAngles);
     }
   }
-
-  return doApplyCalibration;
 }
 
 /**
  * Clear angles information when we know that data became old when it wasn't updated anymore.
- * For example when base stations or sensors are hidden for crazyflie
+ * For example when basestations or sensors are hidden for crazyflie
  *
  * @param appState State that contains the calibration data
  * @param angles The raw and calibrated angles
  * @param baseStation The base station in question
  */
-void pulseProcessorClearOutdated(pulseProcessor_t *appState, pulseProcessorResult_t* angles, int baseStation) {
-  // Repeated sweep from the same baseStation. So in theory we did a cycle, so we should have had all base stations.
-  // If not, cleanup the baseStation that we didn't receive.
-  if(appState->receivedBsSweep[baseStation]) {
-    for(int bs=0; bs != CONFIG_DECK_LIGHTHOUSE_MAX_N_BS; bs++){
+void pulseProcessorClearOutdated(pulseProcessor_t *appState, pulseProcessorResult_t* angles, int basestation) {
+  // Repeated sweep from the same basestation. So in theory we did a cycle, so we should have had all basestations.
+  // If not, cleanup the basestation that we didn't receive.
+  if(appState->receivedBsSweep[basestation]) {
+    for(int bs=0; bs != PULSE_PROCESSOR_N_BASE_STATIONS; bs++){
       if(!appState->receivedBsSweep[bs]){
         pulseProcessorClear(angles, bs);
       }
       appState->receivedBsSweep[bs] = false;
     }
   }
-  appState->receivedBsSweep[baseStation] = true;
+  appState->receivedBsSweep[basestation] = true;
 }
 
 /**
- * @brief Update the information about what angles and what base stations are having correct data
+ * @brief Update the information about what angles and what basestations are having correct data
  *
  * @param angles The result struct to clear
  * @param baseStation The base station
@@ -115,8 +112,8 @@ void processValidAngles(pulseProcessorResult_t* angles, int baseStation)
 void pulseProcessorClear(pulseProcessorResult_t* angles, int baseStation)
 {
   for (size_t sensor = 0; sensor < PULSE_PROCESSOR_N_SENSORS; sensor++) {
-    angles->baseStationMeasurementsLh1[baseStation].sensorMeasurements[sensor].validCount = 0;
-    angles->baseStationMeasurementsLh2[baseStation].sensorMeasurements[sensor].validCount = 0;
+    angles->sensorMeasurementsLh1[sensor].baseStatonMeasurements[baseStation].validCount = 0;
+    angles->sensorMeasurementsLh2[sensor].baseStatonMeasurements[baseStation].validCount = 0;
   }
   processValidAngles(angles, baseStation);
 }
@@ -128,10 +125,10 @@ void pulseProcessorClear(pulseProcessorResult_t* angles, int baseStation)
  */
 void pulseProcessorAllClear(pulseProcessorResult_t* angles)
 {
-  for (int baseStation = 0; baseStation < CONFIG_DECK_LIGHTHOUSE_MAX_N_BS; baseStation++) {
+  for (int baseStation = 0; baseStation < PULSE_PROCESSOR_N_BASE_STATIONS; baseStation++) {
     for (size_t sensor = 0; sensor < PULSE_PROCESSOR_N_SENSORS; sensor++) {
-      angles->baseStationMeasurementsLh1[baseStation].sensorMeasurements[sensor].validCount = 0;
-      angles->baseStationMeasurementsLh2[baseStation].sensorMeasurements[sensor].validCount = 0;
+      angles->sensorMeasurementsLh1[sensor].baseStatonMeasurements[baseStation].validCount = 0;
+      angles->sensorMeasurementsLh2[sensor].baseStatonMeasurements[baseStation].validCount = 0;
     }
     processValidAngles(angles, baseStation);
   }
@@ -148,8 +145,8 @@ void pulseProcessorProcessed(pulseProcessorResult_t* angles, int baseStation)
   processValidAngles(angles, baseStation);
 
   for (size_t sensor = 0; sensor < PULSE_PROCESSOR_N_SENSORS; sensor++) {
-    angles->baseStationMeasurementsLh1[baseStation].sensorMeasurements[sensor].validCount = 0;
-    angles->baseStationMeasurementsLh2[baseStation].sensorMeasurements[sensor].validCount = 0;
+    angles->sensorMeasurementsLh1[sensor].baseStatonMeasurements[baseStation].validCount = 0;
+    angles->sensorMeasurementsLh2[sensor].baseStatonMeasurements[baseStation].validCount = 0;
   }
 }
 

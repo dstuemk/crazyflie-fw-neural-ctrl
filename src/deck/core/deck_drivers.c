@@ -32,7 +32,7 @@
 #include "deck.h"
 #include "debug.h"
 
-#ifdef CONFIG_DEBUG
+#ifdef DEBUG
   #define DECK_DRV_DBG_PRINT(fmt, ...)  DEBUG_PRINT(fmt, ## __VA_ARGS__)
 #else
   #define DECK_DRV_DBG_PRINT(...)

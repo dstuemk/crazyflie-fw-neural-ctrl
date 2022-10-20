@@ -22,12 +22,11 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
  *
- * storage.c: Key/Buffer persistent storage
+ * storage.c: Key/Buffer persistant storage
  *
  */
 
 #include "storage.h"
-#include "param.h"
 
 #include "kve/kve.h"
 
@@ -36,8 +35,6 @@
 
 #include "i2cdev.h"
 #include "eeprom.h"
-
-#include <string.h>
 
 #define TRACE_MEMORY_ACCESS 0
 
@@ -48,7 +45,7 @@
 
 // Memory organization
 
-// Low level memory access
+// Low level memory access 
 
 // ToDo: Shall we handle partition elsewhere?
 #define KVE_PARTITION_START (1024)
@@ -136,7 +133,7 @@ bool storageTest()
   DEBUG_PRINT("Storage check %s.\n", pass?"[OK]":"[FAIL]");
 
   if (!pass) {
-    DEBUG_PRINT("Reformatting storage ...\n");
+    DEBUG_PRINT("Reformating storage ...\n");
 
     kveFormat(&kve);
 
@@ -151,7 +148,7 @@ bool storageTest()
   return pass;
 }
 
-bool storageStore(const char* key, const void* buffer, size_t length)
+bool storageStore(char* key, const void* buffer, size_t length)
 {
   if (!isInit) {
     return false;
@@ -166,23 +163,7 @@ bool storageStore(const char* key, const void* buffer, size_t length)
   return result;
 }
 
-
-bool storageForeach(const char *prefix, storageFunc_t func)
-{
-   if (!isInit) {
-    return 0;
-  }
-
-  xSemaphoreTake(storageMutex, portMAX_DELAY);
-
-  bool success = kveForeach(&kve, prefix, func);
-
-  xSemaphoreGive(storageMutex);
-
-  return success;
-}
-
-size_t storageFetch(const char *key, void* buffer, size_t length)
+size_t storageFetch(char *key, void* buffer, size_t length)
 {
   if (!isInit) {
     return 0;
@@ -197,7 +178,7 @@ size_t storageFetch(const char *key, void* buffer, size_t length)
   return result;
 }
 
-bool storageDelete(const char* key)
+bool storageDelete(char* key)
 {
   if (!isInit) {
     return false;
@@ -211,42 +192,3 @@ bool storageDelete(const char* key)
 
   return result;
 }
-
-void storagePrintStats()
-{
-  kveStats_t stats;
-
-  xSemaphoreTake(storageMutex, portMAX_DELAY);
-
-  kveGetStats(&kve, &stats);
-
-  xSemaphoreGive(storageMutex);
-
-
-  DEBUG_PRINT("Used storage: %d item stored, %d Bytes/%d Bytes (%d%%)\n", stats.totalItems, stats.itemSize, stats.totalSize, (stats.itemSize*100)/stats.totalSize);
-  DEBUG_PRINT("Fragmentation: %d%%\n", stats.fragmentation);
-  DEBUG_PRINT("Efficiency: Data: %d Bytes (%d%%), Keys: %d Bytes (%d%%), Metadata: %d Bytes (%d%%)\n", 
-    stats.dataSize, (stats.dataSize*100)/stats.totalSize,
-    stats.keySize, (stats.keySize*100)/stats.totalSize,
-    stats.metadataSize, (stats.metadataSize*100)/stats.totalSize);
-}
-
-static bool storageStats;
-
-static void printStats(void)
-{
-  if (storageStats) {
-    storagePrintStats();
-
-    storageStats = false;
-  }
-}
-
-PARAM_GROUP_START(system)
-
-/**
- * @brief Set to nonzero to dump CPU and stack usage to console
- */
-PARAM_ADD_WITH_CALLBACK(PARAM_UINT8, storageStats, &storageStats, printStats)
-
-PARAM_GROUP_STOP(system)

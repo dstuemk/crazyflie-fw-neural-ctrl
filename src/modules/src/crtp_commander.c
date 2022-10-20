@@ -97,9 +97,8 @@ struct notifySetpointsStopPacket {
 void notifySetpointsStopDecoder(const void *data, size_t datalen)
 {
   ASSERT(datalen == sizeof(struct notifySetpointsStopPacket));
-  // Note: The remainValidMillisecs argument is an artifact of the old
-  // pull-based high-level commander architecture, and is no longer needed.
-  commanderRelaxPriority();
+  const struct notifySetpointsStopPacket *values = data;
+  commanderNotifySetpointsStop(values->remainValidMillisecs);
 }
 
  /* ---===== packetDecoders array =====--- */

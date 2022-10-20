@@ -94,7 +94,7 @@ void infoTask(void *param)
             strcpy((char*)&p.data[3], "CrazyFlie");
 
             p.size = 3+strlen("CrazyFlie");
-            crtpSendPacketBlock(&p);
+            crtpSendPacket(&p);
           } else if (p.data[0] == infoVersion) {
             i=1;
 
@@ -115,12 +115,12 @@ void infoTask(void *param)
             if (i<31) p.data[i++] = V_MODIFIED?'M':'C';
 
             p.size = (i<31)?i:31;
-            crtpSendPacketBlock(&p);
+            crtpSendPacket(&p);
           } else if (p.data[0] == infoCpuId) {
             memcpy((char*)&p.data[1], (char*)CpuId, 12);
 
             p.size = 13;
-            crtpSendPacketBlock(&p);
+            crtpSendPacket(&p);
           }
 
           break;
@@ -132,21 +132,21 @@ void infoTask(void *param)
             memcpy(&p.data[1], (char*)&value, 4);
 
             p.size = 5;
-            crtpSendPacketBlock(&p);
+            crtpSendPacket(&p);
           } else if (p.data[0] == batteryMax) {
             float value = pmGetBatteryVoltageMax();
 
             memcpy(&p.data[1], (char*)&value, 4);
 
             p.size = 5;
-            crtpSendPacketBlock(&p);
+            crtpSendPacket(&p);
           } else if (p.data[0] == batteryMin) {
             float value = pmGetBatteryVoltageMin();
 
             memcpy(&p.data[1], (char*)&value, 4);
 
             p.size = 5;
-            crtpSendPacketBlock(&p);
+            crtpSendPacket(&p);
           }
           break;
         default:
@@ -168,7 +168,7 @@ void infoTask(void *param)
         memcpy(&p.data[1], (char*)&value, 4);
 
         p.size = 5;
-        crtpSendPacketBlock(&p);
+        crtpSendPacket(&p);
       }
     }
 

@@ -29,7 +29,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "imu_types.h"
-#include "lighthouse_types.h"
+#include "lighthouse_calibration.h"
 
 /* Data structure used by the stabilizer subsystem.
  * All have a timestamp to be set when the data is calculated.
@@ -58,10 +58,26 @@ struct vec3_s {
   float z;
 };
 
+struct vec9_s {
+  uint32_t timestamp; // Timestamp when the data was computed
+
+  float a;
+  float b;
+  float c;
+  float d;
+  float e;
+  float f;
+  float g;
+  float h;
+  float i;
+};
+
 typedef struct vec3_s vector_t;
 typedef struct vec3_s point_t;
 typedef struct vec3_s velocity_t;
 typedef struct vec3_s acc_t;
+typedef struct vec3_s rpy_dot_t;
+typedef struct vec9_s flat_rotation_t;
 
 /* Orientation as a quaternion */
 typedef struct quaternion_s {
@@ -83,14 +99,8 @@ typedef struct quaternion_s {
   };
 } quaternion_t;
 
-typedef enum {
-  MeasurementSourceLocationService  = 0,
-  MeasurementSourceLighthouse       = 1,
-} measurementSource_t;
-
 typedef struct tdoaMeasurement_s {
-  point_t anchorPositions[2];
-  uint8_t anchorIds[2];
+  point_t anchorPosition[2];
   float distanceDiff;
   float stdDev;
 } tdoaMeasurement_t;
@@ -111,7 +121,6 @@ typedef struct positionMeasurement_s {
     float pos[3];
   };
   float stdDev;
-  measurementSource_t source;
 } positionMeasurement_t;
 
 typedef struct poseMeasurement_s {
@@ -137,7 +146,6 @@ typedef struct distanceMeasurement_s {
     };
     float pos[3];
   };
-  uint8_t anchorId;
   float distance;
   float stdDev;
 } distanceMeasurement_t;
@@ -157,6 +165,7 @@ typedef struct sensorData_s {
   Axis3f gyroSec;           // deg/s
 #endif
   uint64_t interruptTimestamp;
+  Axis3f gyroUnfiltered;    // deg/s
 } sensorData_t;
 
 typedef struct state_s {
@@ -165,6 +174,9 @@ typedef struct state_s {
   point_t position;         // m
   velocity_t velocity;      // m/s
   acc_t acc;                // Gs (but acc.z without considering gravity)
+  rpy_dot_t attitude_rate;  // deg/s
+  rpy_dot_t attitude_rate_unfiltered;  // deg/s
+  flat_rotation_t flat_rotation_matrix;  // The quad's attitude as flattend rotation matrix (world-frame)
 } state_t;
 
 typedef struct control_s {
@@ -173,13 +185,6 @@ typedef struct control_s {
   int16_t yaw;
   float thrust;
 } control_t;
-
-typedef struct motors_thrust_s {
-  uint16_t m1;  // PWM ratio
-  uint16_t m2;  // PWM ratio
-  uint16_t m3;  // PWM ratio
-  uint16_t m4;  // PWM ratio
-} motors_thrust_t;
 
 typedef enum mode_e {
   modeDisable = 0,
@@ -267,34 +272,12 @@ typedef struct {
   const vec3d* rotorPos;     // Pos of rotor origin in global reference frame
   const mat3d* rotorRot;     // Rotor rotation matrix
   const mat3d* rotorRotInv;  // Inverted rotor rotation matrix
-  uint8_t sensorId;
-  uint8_t baseStationId;
-  uint8_t sweepId;
   float t;                   // t is the tilt angle of the light plane on the rotor
   float measuredSweepAngle;
   float stdDev;
   const lighthouseCalibrationSweep_t* calib;
   lighthouseCalibrationMeasurementModel_t calibrationMeasurementModel;
 } sweepAngleMeasurement_t;
-
-/** gyroscope measurement */
-typedef struct
-{
-  Axis3f gyro; // deg/s, for legacy reasons
-} gyroscopeMeasurement_t;
-
-/** accelerometer measurement */
-typedef struct
-{
-  Axis3f acc; // Gs, for legacy reasons
-} accelerationMeasurement_t;
-
-/** barometer measurement */
-typedef struct
-{
-  baro_t baro; // for legacy reasons
-} barometerMeasurement_t;
-
 
 // Frequencies to bo used with the RATE_DO_EXECUTE_HZ macro. Do NOT use an arbitrary number.
 #define RATE_1000_HZ 1000
@@ -307,7 +290,6 @@ typedef struct
 #define RATE_MAIN_LOOP RATE_1000_HZ
 #define ATTITUDE_RATE RATE_500_HZ
 #define POSITION_RATE RATE_100_HZ
-#define RATE_HL_COMMANDER RATE_100_HZ
 
 #define RATE_DO_EXECUTE(RATE_HZ, TICK) ((TICK % (RATE_MAIN_LOOP / RATE_HZ)) == 0)
 

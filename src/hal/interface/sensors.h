@@ -49,15 +49,10 @@ void sensorsWaitDataReady(void);
 
 // Allows individual sensor measurement
 bool sensorsReadGyro(Axis3f *gyro);
+bool sensorsReadGyroUnfiltered(Axis3f *gyro);
 bool sensorsReadAcc(Axis3f *acc);
 bool sensorsReadMag(Axis3f *mag);
 bool sensorsReadBaro(baro_t *baro);
-
-/**
- * Suspend or resume sensor data
- */
-void sensorsSuspend();
-void sensorsResume();
 
 /**
  * Set acc mode, one of accModes enum

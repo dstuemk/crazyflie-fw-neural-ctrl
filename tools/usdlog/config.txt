@@ -1,10 +1,8 @@
-1     # version
-512   # buffer size in bytes
+250   # frequency
+50    # buffer size
 log   # file name
-0     # enable on startup (0/1)
-on:fixedFrequency
-250     # frequency
-1     # mode (0: disabled, 1: synchronous stabilizer, 2: asynchronous)
+1     # enable on startup (0/1)
+2     # mode (0: disabled, 1: synchronous stabilizer, 2: asynchronous)
 acc.x
 acc.y
 acc.z
@@ -14,6 +12,9 @@ gyro.z
 baro.asl
 baro.temp
 baro.pressure
+mag.x
+mag.y
+mag.z
 stabilizer.roll
 stabilizer.pitch
 stabilizer.yaw
@@ -22,4 +23,3 @@ ctrltarget.roll
 ctrltarget.pitch
 ctrltarget.yaw
 range.zrange
-on:activeMarkerModeChanged

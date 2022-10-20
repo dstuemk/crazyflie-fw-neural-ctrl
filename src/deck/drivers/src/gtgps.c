@@ -7,7 +7,7 @@
  *
  * Crazyflie control firmware
  *
- * Copyright (C) 2011-2021 Bitcraze AB
+ * Copyright (C) 2011-2012 Bitcraze AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -283,7 +283,7 @@ static void gtgpsInit(DeckInfo *info)
   uart1Init(9600);
 
   xTaskCreate(gtgpsTask, GTGPS_DECK_TASK_NAME,
-              GTGPS_DECK_TASK_STACKSIZE, NULL, GTGPS_DECK_TASK_PRI, NULL);
+              configMINIMAL_STACK_SIZE, NULL, GTGPS_DECK_TASK_PRI, NULL);
 
   isInit = true;
 }
@@ -303,8 +303,8 @@ static const DeckDriver gtgps_deck = {
   .pid = 0x07,
   .name = "bcGTGPS",
 
-  .usedGpio = 0,
-  .usedPeriph = DECK_USING_UART1,
+  .usedPeriph = 0,
+  .usedGpio = 0,               // FIXME: Edit the used GPIOs
 
   .init = gtgpsInit,
   .test = gtgpsTest,

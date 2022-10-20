@@ -60,4 +60,6 @@ bool imu6IsCalibrated(void);
 bool imuHasBarometer(void);
 bool imuHasMangnetometer(void);
 
+
+
 #endif /* IMU_H_ */

@@ -36,7 +36,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "config.h"
-#include "autoconf.h"
 /* ST includes */
 #include "stm32fxxx.h"
 
@@ -63,9 +62,11 @@
 // Not applied for brushless motor setup.
 #define ENABLE_THRUST_BAT_COMPENSATED
 
-#ifdef CONFIG_MOTORS_ESC_PROTOCOL_ONESHOT125
+//#define ENABLE_ONESHOT125
+
+#ifdef ENABLE_ONESHOT125
 /**
- * *WARNING* Make sure the brushless driver is configured correctly as on the Crazyflie with normal
+ * *VARNING* Make sure the brushless driver is configured correctly as on the Crazyflie with normal
  * brushed motors connected they can turn on at full speed when it is powered on!
  *
  * Generates a PWM wave at 2000 Hz update rate, with 125 - 250us high pulse, using the timer.
@@ -79,9 +80,9 @@
   #define MOTORS_BL_PWM_PERIOD         MOTORS_BL_PWM_CNT_FOR_PERIOD
   #define MOTORS_BL_PWM_PRESCALE       (uint16_t)(MOTORS_BL_PWM_PRESCALE_RAW - 1)
   #define MOTORS_BL_POLARITY           TIM_OCPolarity_Low
-#elif defined(CONFIG_MOTORS_ESC_PROTOCOL_ONESHOT42)
+#elif defined(ENABLE_ONESHOT42)
 /**
- * *WARNING* Make sure the brushless driver is configured correctly as on the Crazyflie with normal
+ * *VARNING* Make sure the brushless driver is configured correctly as on the Crazyflie with normal
  * brushed motors connected they can turn on at full speed when it is powered on!
  *
  * Generates a PWM wave at 2000 Hz update rate, with 125 - 250us high pulse, using the timer.
@@ -95,35 +96,9 @@
   #define MOTORS_BL_PWM_PERIOD         MOTORS_BL_PWM_CNT_FOR_PERIOD
   #define MOTORS_BL_PWM_PRESCALE       (uint16_t)(MOTORS_BL_PWM_PRESCALE_RAW - 1)
   #define MOTORS_BL_POLARITY           TIM_OCPolarity_Low
-#elif defined(CONFIG_MOTORS_ESC_PROTOCOL_DSHOT)
-/**
- * *WARNING* Make sure the brushless driver is configured correctly as on the Crazyflie with normal
- * brushed motors connected they can turn on at full speed when it is powered on!
- *
- */
-#ifdef CONFIG_MOTORS_DSHOT_PWM_150KHZ
-  #define MOTORS_BL_PWM_PERIOD         (TIM_CLOCK_HZ / 150000) // 150kHz bitrate DHSOT150
-#endif
-#ifdef CONFIG_MOTORS_DSHOT_PWM_300KHZ
-  #define MOTORS_BL_PWM_PERIOD         (TIM_CLOCK_HZ / 300000) // 300kHz bitrate DHSOT300
-#endif
-#ifdef CONFIG_MOTORS_DSHOT_PWM_600KHZ
-  #define MOTORS_BL_PWM_PERIOD         (TIM_CLOCK_HZ / 600000) // 600kHz bitrate DHSOT600
-#endif
-  #define MOTORS_BL_PWM_PRESCALE       (0)
-  #define MOTORS_BL_POLARITY           TIM_OCPolarity_Low
-  #define MOTORS_TIM_VALUE_FOR_0       (uint16_t)(MOTORS_BL_PWM_PERIOD * 0.37425)
-  #define MOTORS_TIM_VALUE_FOR_1       (uint16_t)(MOTORS_BL_PWM_PERIOD * 0.7485)
-  #define DSHOT_FRAME_SIZE             16
-  #define DSHOT_DMA_BUFFER_SIZE        17 /* With zero ending  */
-  #define DSHOT_MIN_THROTTLE           48
-  #define DSHOT_MAX_THROTTLE           2047
-  #define DSHOT_RANGE                  (DSHOT_MAX_THROTTLE - DSHOT_MIN_THROTTLE)
-
-  #define MOTORS_BL_PWM_CNT_FOR_HIGH   1
 #else
 /**
- * *WARNING* Make sure the brushless driver is configured correctly as on the Crazyflie with normal
+ * *VARNING* Make sure the brushless driver is configured correctly as on the Crazyflie with normal
  * brushed motors connected they can turn on at full speed when it is powered on!
  *
  * Generates a PWM wave (50 - 400 Hz update rate with 1-2 ms high pulse) using the timer. That way we can use the same
@@ -135,7 +110,7 @@
 
   #define MOTORS_BL_PWM_PRESCALE_RAW   (uint32_t)((TIM_CLOCK_HZ/0xFFFF) * BLMC_PERIOD + 1) // +1 is to not end up above 0xFFFF in the end
   #define MOTORS_BL_PWM_CNT_FOR_PERIOD (uint32_t)(TIM_CLOCK_HZ * BLMC_PERIOD / MOTORS_BL_PWM_PRESCALE_RAW)
-  #define MOTORS_BL_PWM_CNT_FOR_HIGH   (uint32_t)(TIM_CLOCK_HZ * MOTORS_HIGH_PERIOD_ZERO / MOTORS_BL_PWM_PRESCALE_RAW)
+  #define MOTORS_BL_PWM_CNT_FOR_HIGH    (uint32_t)(TIM_CLOCK_HZ * MOTORS_HIGH_PERIOD_ZERO / MOTORS_BL_PWM_PRESCALE_RAW)
   #define MOTORS_BL_PWM_PERIOD         MOTORS_BL_PWM_CNT_FOR_PERIOD
   #define MOTORS_BL_PWM_PRESCALE       (uint16_t)(MOTORS_BL_PWM_PRESCALE_RAW - 1)
   #define MOTORS_BL_POLARITY           TIM_OCPolarity_Low
@@ -213,7 +188,7 @@
 typedef enum
 {
   BRUSHED,
-  BRUSHLESS,
+  BRUSHLESS
 } motorsDrvType;
 
 typedef struct
@@ -234,24 +209,12 @@ typedef struct
   uint32_t      timDbgStop;
   uint32_t      timPeriod;
   uint16_t      timPrescaler;
-  DMA_Stream_TypeDef *DMA_stream;
-  uint32_t      DMA_Channel;
-  uint32_t      DMA_PerifAddr;
-  uint16_t      TIM_DMASource;
-  uint8_t       DMA_IRQChannel;
   /* Function pointers */
   void (*setCompare)(TIM_TypeDef* TIMx, uint32_t Compare);
   uint32_t (*getCompare)(TIM_TypeDef* TIMx);
   void (*ocInit)(TIM_TypeDef* TIMx, TIM_OCInitTypeDef* TIM_OCInitStruct);
   void (*preloadConfig)(TIM_TypeDef* TIMx, uint16_t TIM_OCPreload);
 } MotorPerifDef;
-
-typedef struct {
-  uint16_t onPeriodMsec;
-  uint16_t offPeriodMsec;
-  uint16_t varianceMeasurementStartMsec;
-  uint16_t onPeriodPWMRatio;
-} MotorHealthTestDef;
 
 /**
  * Motor mapping configurations
@@ -261,8 +224,6 @@ extern const MotorPerifDef* motorMapDefaultBrushed[NBR_OF_MOTORS];
 extern const MotorPerifDef* motorMapDefaltConBrushless[NBR_OF_MOTORS];
 extern const MotorPerifDef* motorMapBigQuadDeck[NBR_OF_MOTORS];
 extern const MotorPerifDef* motorMapBoltBrushless[NBR_OF_MOTORS];
-extern const MotorPerifDef* motorMapBolt11Brushless[NBR_OF_MOTORS];
-extern const MotorPerifDef* motorMapCF21Brushless[NBR_OF_MOTORS];
 
 /**
  * Test sound tones
@@ -285,39 +246,6 @@ void motorsDeInit(const MotorPerifDef** motorMapSelect);
  * the sequence M1 to M4.
  */
 bool motorsTest(void);
-
-/**
- * Stops all the motors.
- */
-void motorsStop();
-/*
- * Enable PWM output for all motors
- */
-void motorsEnablePWM(void);
-
-/**
- * Disable PWM output for all motors
- */
-void motorsDisablePWM(void);
-
-void motorsEnablePassthough(uint32_t id);
-
-void motorsESCSetInput(uint32_t id);
-
-void motorsESCSetOutput(uint32_t id);
-
-void motorsESCSetHi(uint32_t id);
-
-void motorsESCSetLo(uint32_t id);
-
-int motorsESCIsHi(uint32_t id);
-
-int motorsESCIsLo(uint32_t id);
-
-/**
- * Send DSHOT for all motors at once. Must be prepared first with motorsPrepareDshot()
- */
-void motorsBurstDshot();
 
 /**
  * Set the PWM ratio of the motor 'id'
@@ -344,12 +272,6 @@ void motorsTestTask(void* params);
  *     motorsBeep(false, 0, 0); *
  * */
 void motorsBeep(int id, bool enable, uint16_t frequency, uint16_t ratio);
-
-/**
- * Retrieve the health test settings of the given motor. This allows us to use
- * different health test timings and PWM ratios for brushed and brushless motors.
- */
-const MotorHealthTestDef* motorsGetHealthTestSettings(uint32_t id);
 
 #endif /* __MOTORS_H__ */
 

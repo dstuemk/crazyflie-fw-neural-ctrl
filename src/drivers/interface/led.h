@@ -55,25 +55,23 @@
 #define ERR_LED1         LED_RED_L
 #define ERR_LED2         LED_RED_R
 
-#define LED_NUM 6
+#define LED_NUM 5
 
-typedef enum {LED_BLUE_L = 0, LED_GREEN_L, LED_RED_L, LED_GREEN_R, LED_RED_R, LED_BLUE_NRF} led_t;
-typedef enum { LED_LEDSEQ, LED_PARAM_BITMASK } ledSwitch_t;
+typedef enum {LED_BLUE_L = 0, LED_GREEN_L, LED_RED_L, LED_GREEN_R, LED_RED_R} led_t;
 
 void ledInit();
 bool ledTest();
 
-// Clear all configured LEDs, including NRF LED
+// Clear all configured LEDs
 void ledClearAll(void);
 
-// Set all configured LEDs, including NRF LED
+// Set all configured LEDs
 void ledSetAll(void);
 
 // Procedures to set the status of the LEDs
 void ledSet(led_t led, bool value);
 
-// Shoes fault pattern (2 Red ON, 2 Green and Blue OFF)
-void ledShowFaultPattern(void);
+void ledTask(void *param);
 
 //Legacy functions
 #define ledSetRed(VALUE) ledSet(LED_RED, VALUE)

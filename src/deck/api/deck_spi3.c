@@ -34,7 +34,6 @@
 #include "FreeRTOS.h"
 #include "semphr.h"
 
-#include "autoconf.h"
 #include "cfassert.h"
 #include "config.h"
 #include "nvicconf.h"
@@ -179,7 +178,7 @@ static void spi3DMAInit()
   DMA_Init(SPI_RX_DMA_STREAM, &DMA_InitStructure);
 
   // Configure interrupts
-  NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = NVIC_SPI_PRI;
+  NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = NVIC_HIGH_PRI;
   NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
   NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
 
@@ -265,7 +264,7 @@ void spi3EndTransaction()
   xSemaphoreGive(spiMutex);
 }
 
-#ifdef CONFIG_DECK_USD_USE_ALT_PINS_AND_SPI
+#ifdef USDDECK_USE_ALT_PINS_AND_SPI
 void __attribute__((used)) SPI_TX_DMA_IRQHandler(void)
 {
   portBASE_TYPE xHigherPriorityTaskWoken = pdFALSE;

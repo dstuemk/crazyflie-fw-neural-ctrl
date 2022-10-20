@@ -150,9 +150,7 @@ void memoryRegisterOwHandler(const MemoryOwHandlerDef_t* handlerDef){
 static void memTask(void* param) {
 	crtpInitTaskQueue(CRTP_PORT_MEM);
 
-  // This should be synced with decks starting up, otherwise
-  // there might be late arrivals for the registration that will
-  // trigger assert.
+  systemWaitStart();
 
   // Do not allow registration of new handlers after this point as clients now can start
   // to query for available memories
@@ -182,14 +180,14 @@ static void memSettingsProcess(CRTPPacket* p) {
   switch (p->data[0]) {
     case MEM_CMD_GET_NBR:
       createNbrResponse(p);
-      crtpSendPacketBlock(p);
+      crtpSendPacket(p);
       break;
 
     case MEM_CMD_GET_INFO:
       {
         uint8_t memId = p->data[1];
         createInfoResponse(p, memId);
-        crtpSendPacketBlock(p);
+        crtpSendPacket(p);
       }
       break;
 
@@ -265,7 +263,7 @@ static void memReadProcess(CRTPPacket* p) {
     p->size = 6;
   }
 
-  crtpSendPacketBlock(p);
+  crtpSendPacket(p);
 }
 
 static void memWriteProcess(CRTPPacket* p) {
@@ -294,7 +292,7 @@ static void memWriteProcess(CRTPPacket* p) {
   p->data[5] = result ? STATUS_OK : EIO;
   p->size = 6;
 
-  crtpSendPacketBlock(p);
+  crtpSendPacket(p);
 }
 
 /**

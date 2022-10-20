@@ -33,10 +33,8 @@
 #include "task.h"
 #include "queue.h"
 #include "semphr.h"
-#include "timers.h"
 
 #include "config.h"
-#include "autoconf.h"
 #include "debug.h"
 #include "syslink.h"
 #include "radiolink.h"
@@ -45,18 +43,15 @@
 #include "pm.h"
 #include "ow.h"
 #include "static_mem.h"
-#include "system.h"
-#include "param.h"
+
+#ifdef UART2_LINK_COMM
+#include "uart2.h"
+#endif
 
 static bool isInit = false;
 static uint8_t sendBuffer[SYSLINK_MTU + 6];
 
 static void syslinkRouteIncommingPacket(SyslinkPacket *slp);
-
-static xTimerHandle debugTimer;
-static uint8_t triggerDebugProbe;
-static void debugHandler(xTimerHandle timer);
-static void debugSyslinkReceive(SyslinkPacket *slp);
 
 static xSemaphoreHandle syslinkAccess;
 
@@ -74,6 +69,22 @@ static void syslinkTask(void *param)
   }
 }
 
+#ifdef UART2_LINK_COMM
+
+STATIC_MEM_TASK_ALLOC(uart2Task, UART2_TASK_STACKSIZE);
+
+static void uart2Task(void *param)
+{
+  SyslinkPacket slp;
+  while(1)
+  {
+    uart2GetPacketBlocking(&slp);
+    syslinkRouteIncommingPacket(&slp);
+  }
+}
+
+#endif
+
 static void syslinkRouteIncommingPacket(SyslinkPacket *slp)
 {
   uint8_t groupType;
@@ -90,12 +101,6 @@ static void syslinkRouteIncommingPacket(SyslinkPacket *slp)
       break;
     case SYSLINK_OW_GROUP:
       owSyslinkRecieve(slp);
-      break;
-    case SYSLINK_SYS_GROUP:
-      systemSyslinkReceive(slp);
-      break;
-    case SYSLINK_DEBUG_GROUP:
-      debugSyslinkReceive(slp);
       break;
     default:
       DEBUG_PRINT("Unknown packet:%X.\n", slp->type);
@@ -117,8 +122,10 @@ void syslinkInit()
 
   STATIC_MEM_TASK_CREATE(syslinkTask, syslinkTask, SYSLINK_TASK_NAME, NULL, SYSLINK_TASK_PRI);
 
-  debugTimer = xTimerCreate( "syslinkTimer", M2T(1000), pdTRUE, NULL, debugHandler );
-  xTimerStart(debugTimer, M2T(1000));
+  #ifdef UART2_LINK_COMM
+  uart2Init(512000);
+  STATIC_MEM_TASK_CREATE(uart2Task, uart2Task, UART2_TASK_NAME, NULL, UART2_TASK_PRI);
+  #endif
 
   isInit = true;
 }
@@ -127,12 +134,6 @@ bool syslinkTest()
 {
   return isInit;
 }
-
-bool isSyslinkUp()
-{
-  return isInit;
-}
-
 
 int syslinkSendPacket(SyslinkPacket *slp)
 {
@@ -160,44 +161,29 @@ int syslinkSendPacket(SyslinkPacket *slp)
   sendBuffer[dataSize-2] = cksum[0];
   sendBuffer[dataSize-1] = cksum[1];
 
+  #ifdef UART2_LINK_COMM
+  uint8_t groupType;
+  groupType = slp->type & SYSLINK_GROUP_MASK;
+  switch (groupType)
+  {
+  case SYSLINK_RADIO_GROUP:
+    uart2SendDataDmaBlocking(dataSize, sendBuffer);
+    break;
+  case SYSLINK_PM_GROUP:
+    uartslkSendDataDmaBlocking(dataSize, sendBuffer);
+    break;
+  case SYSLINK_OW_GROUP:
+    uartslkSendDataDmaBlocking(dataSize, sendBuffer);
+    break;
+  default:
+    DEBUG_PRINT("Unknown packet:%X.\n", slp->type);
+    break;
+  }
+  #else
   uartslkSendDataDmaBlocking(dataSize, sendBuffer);
+  #endif
 
   xSemaphoreGive(syslinkAccess);
 
   return 0;
 }
-
-static void debugHandler(xTimerHandle timer) {
-  static SyslinkPacket txPacket;
-
-  if (triggerDebugProbe) {
-    triggerDebugProbe = 0;
-
-    uartSyslinkDumpDebugProbe();
-    DEBUG_PRINT("Syslink NRF debug probe initialized\n");
-
-    txPacket.type = SYSLINK_DEBUG_PROBE;
-    txPacket.length = 0;
-    syslinkSendPacket(&txPacket);
-  }
-}
-
-static void debugSyslinkReceive(SyslinkPacket *slp) {
-  if (slp->type == SYSLINK_DEBUG_PROBE) {
-    DEBUG_PRINT("NRF Address received: %d\n", slp->data[0]);
-    DEBUG_PRINT("NRF Chan received: %d\n", slp->data[1]);
-    DEBUG_PRINT("NRF Rate received: %d\n", slp->data[2]);
-    DEBUG_PRINT("NRF Dropped: %d\n", slp->data[3]);
-    DEBUG_PRINT("NRF uart error code: %d\n", slp->data[4]);
-    DEBUG_PRINT("NRF uart error count: %d\n", slp->data[5]);
-    DEBUG_PRINT("NRF uart checksum 1 fail count: %d\n", slp->data[6]);
-    DEBUG_PRINT("NRF uart checksum 2 fail count: %d\n", slp->data[7]);
-  }
-}
-
-PARAM_GROUP_START(syslink)
-/**
- * @brief Trigger syslink debug probe in the NRF by setting to 1
- */
-PARAM_ADD(PARAM_UINT8, probe, &triggerDebugProbe)
-PARAM_GROUP_STOP(syslink)

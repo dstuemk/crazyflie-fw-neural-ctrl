@@ -21,8 +21,8 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
- * range.h: Centralize range measurements for different directions
- *          and make them available as log
+ * ranges.h: Centralize range measurements for different directions
+ *           and make them available as log
  */
 
 #pragma once
@@ -56,8 +56,9 @@ float rangeGet(rangeDirection_t direction);
 /**
  * Enqueue a range measurement for distance to the ground in the current estimator.
  *
- * @param distance Distance to the ground (m)
+ * @param dstance Distance to the ground (m)
  * @param stdDev The standard deviation of the range sample
  * @param timeStamp The time when the range was sampled (in sys ticks)
+ * @return true if the sample was successfuly enqueued
  */
-void rangeEnqueueDownRangeInEstimator(float distance, float stdDev, uint32_t timeStamp);
+bool rangeEnqueueDownRangeInEstimator(float distance, float stdDev, uint32_t timeStamp);

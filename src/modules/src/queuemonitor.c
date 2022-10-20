@@ -28,7 +28,7 @@
 
 #include "queuemonitor.h"
 
-#ifdef CONFIG_DEBUG_QUEUE_MONITOR
+#ifdef DEBUG_QUEUE_MONITOR
 
 #include <stdbool.h>
 #include "timers.h"
@@ -171,4 +171,4 @@ static void timerHandler(xTimerHandle timer) {
   debugPrint();
 }
 
-#endif // CONFIG_DEBUG_QUEUE_MONITOR
+#endif // DEBUG_QUEUE_MONITOR

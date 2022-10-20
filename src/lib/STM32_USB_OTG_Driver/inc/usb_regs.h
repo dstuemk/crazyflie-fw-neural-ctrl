@@ -2,19 +2,25 @@
   ******************************************************************************
   * @file    usb_regs.h
   * @author  MCD Application Team
-  * @version V2.2.1
-  * @date    17-March-2018
+  * @version V2.1.0
+  * @date    19-March-2012
   * @brief   hardware registers
   ******************************************************************************
   * @attention
   *
-  * <h2><center>&copy; Copyright (c) 2015 STMicroelectronics.
-  * All rights reserved.</center></h2>
+  * <h2><center>&copy; COPYRIGHT 2012 STMicroelectronics</center></h2>
   *
-  * This software component is licensed by ST under Ultimate Liberty license
-  * SLA0044, the "License"; You may not use this file except in compliance with
-  * the License. You may obtain a copy of the License at:
-  *                      <http://www.st.com/SLA0044>
+  * Licensed under MCD-ST Liberty SW License Agreement V2, (the "License");
+  * You may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at:
+  *
+  *        http://www.st.com/software_license_agreement_liberty_v2
+  *
+  * Unless required by applicable law or agreed to in writing, software 
+  * distributed under the License is distributed on an "AS IS" BASIS, 
+  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
   *
   ******************************************************************************
   */
@@ -25,6 +31,8 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "usb_conf.h"
+#include "stm32f4xx.h"
+#include "core_cm4.h"
 
 
 /** @addtogroup USB_OTG_DRIVER
@@ -74,7 +82,7 @@
 /** @defgroup __USB_OTG_Core_register
   * @{
   */
-typedef struct _USB_OTG_GREGS  /* 000h */
+typedef struct _USB_OTG_GREGS  //000h
 {
   __IO uint32_t GOTGCTL;      /* USB_OTG Control and Status Register    000h*/
   __IO uint32_t GOTGINT;      /* USB_OTG Interrupt Register             004h*/
@@ -104,7 +112,7 @@ USB_OTG_GREGS;
 /** @defgroup __device_Registers
   * @{
   */
-typedef struct _USB_OTG_DREGS /* 800h */
+typedef struct _USB_OTG_DREGS // 800h
 {
   __IO uint32_t DCFG;         /* dev Configuration Register   800h*/
   __IO uint32_t DCTL;         /* dev Control Register         804h*/
@@ -213,7 +221,7 @@ USB_OTG_HC_REGS;
 /** @defgroup __otg_Core_registers
   * @{
   */
-typedef struct USB_OTG_core_regs /* 000h */
+typedef struct USB_OTG_core_regs //000h
 {
   USB_OTG_GREGS         *GREGS;
   USB_OTG_DREGS         *DREGS;
@@ -613,32 +621,6 @@ uint32_t Reserved :
   b;
 } USB_OTG_DTXFSTSn_TypeDef ;
 
-#if defined (STM32F446xx) || defined (STM32F469_479xx)
-typedef union _USB_OTG_GCCFG_TypeDef 
-{
-  uint32_t d32;
-  struct
-  {
-uint32_t Reserved_in :
-    16;
-uint32_t pwdn :
-    1;
-uint32_t Reserved_17 :
-    1;
-uint32_t Reserved_18 :
-    1;
-uint32_t Reserved_19 :
-    1;
-uint32_t Reserved_20 :
-    1;
-uint32_t vbden :
-    1;
-uint32_t Reserved_out :
-    10;
-  }
-  b;
-} USB_OTG_GCCFG_TypeDef ;
-#else
 typedef union _USB_OTG_GCCFG_TypeDef 
 {
   uint32_t d32;
@@ -663,7 +645,6 @@ uint32_t Reserved_out :
   }
   b;
 } USB_OTG_GCCFG_TypeDef ;
-#endif
 
 typedef union _USB_OTG_DCFG_TypeDef 
 {
@@ -887,13 +868,12 @@ uint32_t xfersize :
 uint32_t Reserved7_18 :
     12;
 uint32_t pktcnt :
-    1;
+    2;
 uint32_t Reserved20_28 :
     9;
 uint32_t supcnt :
     2;
-uint32_t Reserved31 :
-    1;
+    uint32_t Reserved31;
   }
   b;
 } USB_OTG_DEP0XFRSIZ_TypeDef ;
@@ -1196,7 +1176,7 @@ uint32_t Reserved5_31 :
   */ 
 
 
-#endif /* __USB_OTG_REGS_H__ */
+#endif //__USB_OTG_REGS_H__
 
 
 /**

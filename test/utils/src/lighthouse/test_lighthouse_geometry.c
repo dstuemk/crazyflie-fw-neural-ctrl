@@ -1,6 +1,3 @@
-// @IGNORE_IF_NOT CONFIG_DECK_LIGHTHOUSE
-
-// File under test lighthouse_geometry.c
 #include "lighthouse_geometry.h"
 
 #include <stdlib.h>

@@ -36,19 +36,16 @@
 #include "debug.h"
 #include "motors.h"
 #include "pm.h"
-#include "platform.h"
 
 #include "stabilizer.h"
 
 #include "sensors.h"
 #include "commander.h"
-#include "crtp_commander_high_level.h"
 #include "crtp_localization_service.h"
+#include "sitaw.h"
 #include "controller.h"
 #include "power_distribution.h"
 #include "collision_avoidance.h"
-#include "health.h"
-#include "supervisor.h"
 
 #include "estimator.h"
 #include "usddeck.h"
@@ -56,24 +53,36 @@
 #include "statsCnt.h"
 #include "static_mem.h"
 #include "rateSupervisor.h"
+#include "neural_control.h"
+//#include "neural_net.h"
+#include "remote_control.h"
 
 static bool isInit;
 static bool emergencyStop = false;
 static int emergencyStopTimeout = EMERGENCY_STOP_TIMEOUT_DISABLED;
 
-static uint32_t inToOutLatency;
+static bool checkStops;
+
+#define PROPTEST_NBR_OF_VARIANCE_VALUES   100
+static bool startPropTest = false;
+
+uint32_t inToOutLatency;
 
 // State variables for the stabilizer
 static setpoint_t setpoint;
 static sensorData_t sensorData;
 static state_t state;
 static control_t control;
-static motors_thrust_t motorPower;
-// For scratch storage - never logged or passed to other subsystems.
-static setpoint_t tempSetpoint;
 
 static StateEstimatorType estimatorType;
 static ControllerType controllerType;
+
+typedef enum { configureAcc, measureNoiseFloor, measureProp, testBattery, restartBatTest, evaluateResult, testDone } TestState;
+#ifdef RUN_PROP_TEST_AT_STARTUP
+  static TestState testState = configureAcc;
+#else
+  static TestState testState = testDone;
+#endif
 
 static STATS_CNT_RATE_DEFINE(stabilizerRate, 500);
 static rateSupervisor_t rateSupervisorContext;
@@ -115,9 +124,21 @@ static struct {
   int16_t az;
 } setpointCompressed;
 
+static float accVarX[NBR_OF_MOTORS];
+static float accVarY[NBR_OF_MOTORS];
+static float accVarZ[NBR_OF_MOTORS];
+// Bit field indicating if the motors passed the motor test.
+// Bit 0 - 1 = M1 passed
+// Bit 1 - 1 = M2 passed
+// Bit 2 - 1 = M3 passed
+// Bit 3 - 1 = M4 passed
+static uint8_t motorPass = 0;
+static uint16_t motorTestCount = 0;
+
 STATIC_MEM_TASK_ALLOC(stabilizerTask, STABILIZER_TASK_STACKSIZE);
 
 static void stabilizerTask(void* param);
+static void testProps(sensorData_t *sensors);
 
 static void calcSensorToOutputLatency(const sensorData_t *sensorData)
 {
@@ -176,7 +197,7 @@ void stabilizerInit(StateEstimatorType estimator)
   stateEstimatorInit(estimator);
   controllerInit(ControllerTypeAny);
   powerDistributionInit();
-  motorsInit(platformConfigGetMotorMapping());
+  sitAwInit();
   collisionAvoidanceInit();
   estimatorType = getStateEstimator();
   controllerType = getControllerType();
@@ -194,7 +215,6 @@ bool stabilizerTest(void)
   pass &= stateEstimatorTest();
   pass &= controllerTest();
   pass &= powerDistributionTest();
-  pass &= motorsTest();
   pass &= collisionAvoidanceTest();
 
   return pass;
@@ -243,11 +263,15 @@ static void stabilizerTask(void* param)
     // The sensor should unlock at 1kHz
     sensorsWaitDataReady();
 
-    // update sensorData struct (for logging variables)
-    sensorsAcquire(&sensorData, tick);
+    if (startPropTest != false) {
+      // TODO: What happens with estimator when we run tests after startup?
+      testState = configureAcc;
+      startPropTest = false;
+    }
 
-    if (healthShallWeRunTest()) {
-      healthRunTests(&sensorData);
+    if (testState != testDone) {
+      sensorsAcquire(&sensorData, tick);
+      testProps(&sensorData);
     } else {
       // allow to update estimator dynamically
       if (getStateEstimator() != estimatorType) {
@@ -260,60 +284,48 @@ static void stabilizerTask(void* param)
         controllerType = getControllerType();
       }
 
-      stateEstimator(&state, tick);
+      stateEstimator(&state, &sensorData, &control, tick);
       compressState();
 
-      if (crtpCommanderHighLevelGetSetpoint(&tempSetpoint, &state, tick)) {
-        commanderSetSetpoint(&tempSetpoint, COMMANDER_PRIORITY_HIGHLEVEL);
-      }
+
+      //give kalman-state-estimation to neural_control:
+      neuralControlTaskEnqueueState(state);
+      remoteControlTaskEnqueueState(state);
 
       commanderGetSetpoint(&setpoint, &state);
       compressSetpoint();
 
+      sitAwUpdateSetpoint(&setpoint, &sensorData, &state);
       collisionAvoidanceUpdateSetpoint(&setpoint, &sensorData, &state, tick);
 
       controller(&control, &setpoint, &sensorData, &state, tick);
 
       checkEmergencyStopTimeout();
 
-      //
-      // The supervisor module keeps track of Crazyflie state such as if
-      // we are ok to fly, or if the Crazyflie is in flight.
-      //
-      supervisorUpdate(&sensorData);
-
+      checkStops = systemIsArmed();
       if (emergencyStop || (systemIsArmed() == false)) {
-        motorsStop();
+        powerStop();
       } else {
-        powerDistribution(&motorPower, &control);
-        motorsSetRatio(MOTOR_M1, motorPower.m1);
-        motorsSetRatio(MOTOR_M2, motorPower.m2);
-        motorsSetRatio(MOTOR_M3, motorPower.m3);
-        motorsSetRatio(MOTOR_M4, motorPower.m4);
+        powerDistribution(&control);
       }
 
-#ifdef CONFIG_DECK_USD
       // Log data to uSD card if configured
-      if (usddeckLoggingEnabled()
+      if (   usddeckLoggingEnabled()
           && usddeckLoggingMode() == usddeckLoggingMode_SynchronousStabilizer
           && RATE_DO_EXECUTE(usddeckFrequency(), tick)) {
         usddeckTriggerLogging();
       }
-#endif
-      calcSensorToOutputLatency(&sensorData);
-      tick++;
-      STATS_CNT_RATE_EVENT(&stabilizerRate);
+    }
+    calcSensorToOutputLatency(&sensorData);
+    tick++;
+    STATS_CNT_RATE_EVENT(&stabilizerRate);
 
-      if (!rateSupervisorValidate(&rateSupervisorContext, xTaskGetTickCount())) {
-        if (!rateWarningDisplayed) {
-          DEBUG_PRINT("WARNING: stabilizer loop rate is off (%lu)\n", rateSupervisorLatestCount(&rateSupervisorContext));
-          rateWarningDisplayed = true;
-        }
+    if (!rateSupervisorValidate(&rateSupervisorContext, xTaskGetTickCount())) {
+      if (!rateWarningDisplayed) {
+        DEBUG_PRINT("WARNING: stabilizer loop rate is off (%lu)\n", rateSupervisorLatestCount(&rateSupervisorContext));
+        rateWarningDisplayed = true;
       }
     }
-#ifdef CONFIG_MOTORS_ESC_PROTOCOL_DSHOT
-    motorsBurstDshot();
-#endif
   }
 }
 
@@ -333,210 +345,283 @@ void stabilizerSetEmergencyStopTimeout(int timeout)
   emergencyStopTimeout = timeout;
 }
 
-/**
- * Parameters to set the estimator and controller type
- * for the stabilizer module, or to do an emergency stop
+static float variance(float *buffer, uint32_t length)
+{
+  uint32_t i;
+  float sum = 0;
+  float sumSq = 0;
+
+  for (i = 0; i < length; i++)
+  {
+    sum += buffer[i];
+    sumSq += buffer[i] * buffer[i];
+  }
+
+  return sumSq - (sum * sum) / length;
+}
+
+/** Evaluate the values from the propeller test
+ * @param low The low limit of the self test
+ * @param high The high limit of the self test
+ * @param value The value to compare with.
+ * @param string A pointer to a string describing the value.
+ * @return True if self test within low - high limit, false otherwise
  */
+static bool evaluateTest(float low, float high, float value, uint8_t motor)
+{
+  if (value < low || value > high)
+  {
+    DEBUG_PRINT("Propeller test on M%d [FAIL]. low: %0.2f, high: %0.2f, measured: %0.2f\n",
+                motor + 1, (double)low, (double)high, (double)value);
+    return false;
+  }
+
+  motorPass |= (1 << motor);
+
+  return true;
+}
+
+
+static void testProps(sensorData_t *sensors)
+{
+  static uint32_t i = 0;
+  NO_DMA_CCM_SAFE_ZERO_INIT static float accX[PROPTEST_NBR_OF_VARIANCE_VALUES];
+  NO_DMA_CCM_SAFE_ZERO_INIT static float accY[PROPTEST_NBR_OF_VARIANCE_VALUES];
+  NO_DMA_CCM_SAFE_ZERO_INIT static float accZ[PROPTEST_NBR_OF_VARIANCE_VALUES];
+  static float accVarXnf;
+  static float accVarYnf;
+  static float accVarZnf;
+  static int motorToTest = 0;
+  static uint8_t nrFailedTests = 0;
+  static float idleVoltage;
+  static float minSingleLoadedVoltage[NBR_OF_MOTORS];
+  static float minLoadedVoltage;
+
+  if (testState == configureAcc)
+  {
+    motorPass = 0;
+    sensorsSetAccMode(ACC_MODE_PROPTEST);
+    testState = measureNoiseFloor;
+    minLoadedVoltage = idleVoltage = pmGetBatteryVoltage();
+    minSingleLoadedVoltage[MOTOR_M1] = minLoadedVoltage;
+    minSingleLoadedVoltage[MOTOR_M2] = minLoadedVoltage;
+    minSingleLoadedVoltage[MOTOR_M3] = minLoadedVoltage;
+    minSingleLoadedVoltage[MOTOR_M4] = minLoadedVoltage;
+  }
+  if (testState == measureNoiseFloor)
+  {
+    accX[i] = sensors->acc.x;
+    accY[i] = sensors->acc.y;
+    accZ[i] = sensors->acc.z;
+
+    if (++i >= PROPTEST_NBR_OF_VARIANCE_VALUES)
+    {
+      i = 0;
+      accVarXnf = variance(accX, PROPTEST_NBR_OF_VARIANCE_VALUES);
+      accVarYnf = variance(accY, PROPTEST_NBR_OF_VARIANCE_VALUES);
+      accVarZnf = variance(accZ, PROPTEST_NBR_OF_VARIANCE_VALUES);
+      DEBUG_PRINT("Acc noise floor variance X+Y:%f, (Z:%f)\n",
+                  (double)accVarXnf + (double)accVarYnf, (double)accVarZnf);
+      testState = measureProp;
+    }
+
+  }
+  else if (testState == measureProp)
+  {
+    if (i < PROPTEST_NBR_OF_VARIANCE_VALUES)
+    {
+      accX[i] = sensors->acc.x;
+      accY[i] = sensors->acc.y;
+      accZ[i] = sensors->acc.z;
+      if (pmGetBatteryVoltage() < minSingleLoadedVoltage[motorToTest])
+      {
+        minSingleLoadedVoltage[motorToTest] = pmGetBatteryVoltage();
+      }
+    }
+    i++;
+
+    if (i == 1)
+    {
+      motorsSetRatio(motorToTest, 0xFFFF);
+    }
+    else if (i == 50)
+    {
+      motorsSetRatio(motorToTest, 0);
+    }
+    else if (i == PROPTEST_NBR_OF_VARIANCE_VALUES)
+    {
+      accVarX[motorToTest] = variance(accX, PROPTEST_NBR_OF_VARIANCE_VALUES);
+      accVarY[motorToTest] = variance(accY, PROPTEST_NBR_OF_VARIANCE_VALUES);
+      accVarZ[motorToTest] = variance(accZ, PROPTEST_NBR_OF_VARIANCE_VALUES);
+      DEBUG_PRINT("Motor M%d variance X+Y:%f (Z:%f)\n",
+                   motorToTest+1, (double)accVarX[motorToTest] + (double)accVarY[motorToTest],
+                   (double)accVarZ[motorToTest]);
+    }
+    else if (i >= 1000)
+    {
+      i = 0;
+      motorToTest++;
+      if (motorToTest >= NBR_OF_MOTORS)
+      {
+        i = 0;
+        motorToTest = 0;
+        testState = evaluateResult;
+        sensorsSetAccMode(ACC_MODE_FLIGHT);
+      }
+    }
+  }
+  else if (testState == testBattery)
+  {
+    if (i == 0)
+    {
+      minLoadedVoltage = idleVoltage = pmGetBatteryVoltage();
+    }
+    if (i == 1)
+    {
+      motorsSetRatio(MOTOR_M1, 0xFFFF);
+      motorsSetRatio(MOTOR_M2, 0xFFFF);
+      motorsSetRatio(MOTOR_M3, 0xFFFF);
+      motorsSetRatio(MOTOR_M4, 0xFFFF);
+    }
+    else if (i < 50)
+    {
+      if (pmGetBatteryVoltage() < minLoadedVoltage)
+        minLoadedVoltage = pmGetBatteryVoltage();
+    }
+    else if (i == 50)
+    {
+      motorsSetRatio(MOTOR_M1, 0);
+      motorsSetRatio(MOTOR_M2, 0);
+      motorsSetRatio(MOTOR_M3, 0);
+      motorsSetRatio(MOTOR_M4, 0);
+//      DEBUG_PRINT("IdleV: %f, minV: %f, M1V: %f, M2V: %f, M3V: %f, M4V: %f\n", (double)idleVoltage,
+//                  (double)minLoadedVoltage,
+//                  (double)minSingleLoadedVoltage[MOTOR_M1],
+//                  (double)minSingleLoadedVoltage[MOTOR_M2],
+//                  (double)minSingleLoadedVoltage[MOTOR_M3],
+//                  (double)minSingleLoadedVoltage[MOTOR_M4]);
+      DEBUG_PRINT("%f %f %f %f %f %f\n", (double)idleVoltage,
+                  (double)(idleVoltage - minLoadedVoltage),
+                  (double)(idleVoltage - minSingleLoadedVoltage[MOTOR_M1]),
+                  (double)(idleVoltage - minSingleLoadedVoltage[MOTOR_M2]),
+                  (double)(idleVoltage - minSingleLoadedVoltage[MOTOR_M3]),
+                  (double)(idleVoltage - minSingleLoadedVoltage[MOTOR_M4]));
+      testState = restartBatTest;
+      i = 0;
+    }
+    i++;
+  }
+  else if (testState == restartBatTest)
+  {
+    if (i++ > 2000)
+    {
+      testState = configureAcc;
+      i = 0;
+    }
+  }
+  else if (testState == evaluateResult)
+  {
+    for (int m = 0; m < NBR_OF_MOTORS; m++)
+    {
+      if (!evaluateTest(0, PROPELLER_BALANCE_TEST_THRESHOLD,  accVarX[m] + accVarY[m], m))
+      {
+        nrFailedTests++;
+        for (int j = 0; j < 3; j++)
+        {
+          motorsBeep(m, true, testsound[m], (uint16_t)(MOTORS_TIM_BEEP_CLK_FREQ / A4)/ 20);
+          vTaskDelay(M2T(MOTORS_TEST_ON_TIME_MS));
+          motorsBeep(m, false, 0, 0);
+          vTaskDelay(M2T(100));
+        }
+      }
+    }
+#ifdef PLAY_STARTUP_MELODY_ON_MOTORS
+    if (nrFailedTests == 0)
+    {
+      for (int m = 0; m < NBR_OF_MOTORS; m++)
+      {
+        motorsBeep(m, true, testsound[m], (uint16_t)(MOTORS_TIM_BEEP_CLK_FREQ / A4)/ 20);
+        vTaskDelay(M2T(MOTORS_TEST_ON_TIME_MS));
+        motorsBeep(m, false, 0, 0);
+        vTaskDelay(M2T(MOTORS_TEST_DELAY_TIME_MS));
+      }
+    }
+#endif
+    motorTestCount++;
+    testState = testDone;
+  }
+}
+PARAM_GROUP_START(health)
+PARAM_ADD(PARAM_UINT8, startPropTest, &startPropTest)
+PARAM_GROUP_STOP(health)
+
+
 PARAM_GROUP_START(stabilizer)
-/**
- * @brief Estimator type Any(0), complementary(1), kalman(2) (Default: 0)
- */
-PARAM_ADD_CORE(PARAM_UINT8, estimator, &estimatorType)
-/**
- * @brief Controller type Any(0), PID(1), Mellinger(2), INDI(3) (Default: 0)
- */
-PARAM_ADD_CORE(PARAM_UINT8, controller, &controllerType)
-/**
- * @brief If set to nonzero will turn off power
- */
-PARAM_ADD_CORE(PARAM_UINT8, stop, &emergencyStop)
+PARAM_ADD(PARAM_UINT8, estimator, &estimatorType)
+PARAM_ADD(PARAM_UINT8, controller, &controllerType)
+PARAM_ADD(PARAM_UINT8, stop, &emergencyStop)
 PARAM_GROUP_STOP(stabilizer)
 
+LOG_GROUP_START(health)
+LOG_ADD(LOG_FLOAT, motorVarXM1, &accVarX[0])
+LOG_ADD(LOG_FLOAT, motorVarYM1, &accVarY[0])
+LOG_ADD(LOG_FLOAT, motorVarXM2, &accVarX[1])
+LOG_ADD(LOG_FLOAT, motorVarYM2, &accVarY[1])
+LOG_ADD(LOG_FLOAT, motorVarXM3, &accVarX[2])
+LOG_ADD(LOG_FLOAT, motorVarYM3, &accVarY[2])
+LOG_ADD(LOG_FLOAT, motorVarXM4, &accVarX[3])
+LOG_ADD(LOG_FLOAT, motorVarYM4, &accVarY[3])
+LOG_ADD(LOG_UINT8, motorPass, &motorPass)
+LOG_ADD(LOG_UINT16, motorTestCount, &motorTestCount)
+LOG_ADD(LOG_UINT8, checkStops, &checkStops)
+LOG_GROUP_STOP(health)
 
-/**
- * Log group for the current controller target
- *
- * Note: all members may not be updated depending on how the system is used
- */
 LOG_GROUP_START(ctrltarget)
+LOG_ADD(LOG_FLOAT, x, &setpoint.position.x)
+LOG_ADD(LOG_FLOAT, y, &setpoint.position.y)
+LOG_ADD(LOG_FLOAT, z, &setpoint.position.z)
 
-/**
- * @brief Desired position X [m]
- */
-LOG_ADD_CORE(LOG_FLOAT, x, &setpoint.position.x)
+LOG_ADD(LOG_FLOAT, vx, &setpoint.velocity.x)
+LOG_ADD(LOG_FLOAT, vy, &setpoint.velocity.y)
+LOG_ADD(LOG_FLOAT, vz, &setpoint.velocity.z)
 
-/**
- * @brief Desired position Y [m]
- */
-LOG_ADD_CORE(LOG_FLOAT, y, &setpoint.position.y)
+LOG_ADD(LOG_FLOAT, ax, &setpoint.acceleration.x)
+LOG_ADD(LOG_FLOAT, ay, &setpoint.acceleration.y)
+LOG_ADD(LOG_FLOAT, az, &setpoint.acceleration.z)
 
-/**
- * @brief Desired position X [m]
- */
-LOG_ADD_CORE(LOG_FLOAT, z, &setpoint.position.z)
-
-/**
- * @brief Desired velocity X [m/s]
- */
-LOG_ADD_CORE(LOG_FLOAT, vx, &setpoint.velocity.x)
-
-/**
- * @brief Desired velocity Y [m/s]
- */
-LOG_ADD_CORE(LOG_FLOAT, vy, &setpoint.velocity.y)
-
-/**
- * @brief Desired velocity Z [m/s]
- */
-LOG_ADD_CORE(LOG_FLOAT, vz, &setpoint.velocity.z)
-
-/**
- * @brief Desired acceleration X [m/s^2]
- */
-LOG_ADD_CORE(LOG_FLOAT, ax, &setpoint.acceleration.x)
-
-/**
- * @brief Desired acceleration Y [m/s^2]
- */
-LOG_ADD_CORE(LOG_FLOAT, ay, &setpoint.acceleration.y)
-
-/**
- * @brief Desired acceleration Z [m/s^2]
- */
-LOG_ADD_CORE(LOG_FLOAT, az, &setpoint.acceleration.z)
-
-/**
- * @brief Desired attitude, roll [deg]
- */
-LOG_ADD_CORE(LOG_FLOAT, roll, &setpoint.attitude.roll)
-
-/**
- * @brief Desired attitude, pitch [deg]
- */
-LOG_ADD_CORE(LOG_FLOAT, pitch, &setpoint.attitude.pitch)
-
-/**
- * @brief Desired attitude rate, yaw rate [deg/s]
- */
-LOG_ADD_CORE(LOG_FLOAT, yaw, &setpoint.attitudeRate.yaw)
+LOG_ADD(LOG_FLOAT, roll, &setpoint.attitude.roll)
+LOG_ADD(LOG_FLOAT, pitch, &setpoint.attitude.pitch)
+LOG_ADD(LOG_FLOAT, yaw, &setpoint.attitudeRate.yaw)
 LOG_GROUP_STOP(ctrltarget)
 
-/**
- * Log group for the current controller target, compressed format.
- * This flavour of the controller target logs are defined with types
- * that use less space and makes it possible to add more logs to a
- * log configuration.
- *
- * Note: all members may not be updated depending on how the system is used
- */
-
 LOG_GROUP_START(ctrltargetZ)
-/**
- * @brief Desired position X [mm]
- */
-LOG_ADD(LOG_INT16, x, &setpointCompressed.x)
-
-/**
- * @brief Desired position Y [mm]
- */
+LOG_ADD(LOG_INT16, x, &setpointCompressed.x)   // position - mm
 LOG_ADD(LOG_INT16, y, &setpointCompressed.y)
-
-/**
- * @brief Desired position Z [mm]
- */
 LOG_ADD(LOG_INT16, z, &setpointCompressed.z)
 
-/**
- * @brief Desired velocity X [mm/s]
- */
-LOG_ADD(LOG_INT16, vx, &setpointCompressed.vx)
-
-/**
- * @brief Desired velocity Y [mm/s]
- */
+LOG_ADD(LOG_INT16, vx, &setpointCompressed.vx) // velocity - mm / sec
 LOG_ADD(LOG_INT16, vy, &setpointCompressed.vy)
-
-/**
- * @brief Desired velocity Z [mm/s]
- */
 LOG_ADD(LOG_INT16, vz, &setpointCompressed.vz)
 
-/**
- * @brief Desired acceleration X [mm/s^2]
- */
-LOG_ADD(LOG_INT16, ax, &setpointCompressed.ax)
-
-/**
- * @brief Desired acceleration Y [mm/s^2]
- */
+LOG_ADD(LOG_INT16, ax, &setpointCompressed.ax) // acceleration - mm / sec^2
 LOG_ADD(LOG_INT16, ay, &setpointCompressed.ay)
-
-/**
- * @brief Desired acceleration Z [mm/s^2]
- */
 LOG_ADD(LOG_INT16, az, &setpointCompressed.az)
 LOG_GROUP_STOP(ctrltargetZ)
 
-/**
- * Logs to set the estimator and controller type
- * for the stabilizer module
- */
 LOG_GROUP_START(stabilizer)
-/**
- * @brief Estimated roll
- *   Note: Same as stateEstimate.roll
- */
 LOG_ADD(LOG_FLOAT, roll, &state.attitude.roll)
-/**
- * @brief Estimated pitch
- *   Note: Same as stateEstimate.pitch
- */
 LOG_ADD(LOG_FLOAT, pitch, &state.attitude.pitch)
-/**
- * @brief Estimated yaw
- *   Note: same as stateEstimate.yaw
- */
 LOG_ADD(LOG_FLOAT, yaw, &state.attitude.yaw)
-/**
- * @brief Current thrust
- */
 LOG_ADD(LOG_FLOAT, thrust, &control.thrust)
-/**
- * @brief Rate of stabilizer loop
- */
+
 STATS_CNT_RATE_LOG_ADD(rtStab, &stabilizerRate)
-/**
- * @brief Latency from sampling of sensor to motor output
- *    Note: Used for debugging but could also be used as a system test
- */
 LOG_ADD(LOG_UINT32, intToOut, &inToOutLatency)
 LOG_GROUP_STOP(stabilizer)
 
-/**
- * Log group for accelerometer sensor measurement, based on body frame.
- * Compensated for a miss-alignment by gravity at startup.
- *
- * For data on measurement noise please see information from the sensor
- * manufacturer. To see what accelerometer sensor is in your Crazyflie or Bolt
- * please check documentation on the Bitcraze webpage or check the parameter
- * group `imu_sensors`.
- */
 LOG_GROUP_START(acc)
-
-/**
- * @brief Acceleration in X [Gs]
- */
-LOG_ADD_CORE(LOG_FLOAT, x, &sensorData.acc.x)
-
-/**
- * @brief Acceleration in Y [Gs]
- */
-LOG_ADD_CORE(LOG_FLOAT, y, &sensorData.acc.y)
-
-/**
- * @brief Acceleration in Z [Gs]
- */
-LOG_ADD_CORE(LOG_FLOAT, z, &sensorData.acc.z)
+LOG_ADD(LOG_FLOAT, x, &sensorData.acc.x)
+LOG_ADD(LOG_FLOAT, y, &sensorData.acc.y)
+LOG_ADD(LOG_FLOAT, z, &sensorData.acc.z)
 LOG_GROUP_STOP(acc)
 
 #ifdef LOG_SEC_IMU
@@ -547,56 +632,16 @@ LOG_ADD(LOG_FLOAT, z, &sensorData.accSec.z)
 LOG_GROUP_STOP(accSec)
 #endif
 
-/**
- * Log group for the barometer.
- *
- * For data on measurement noise please see information from the sensor
- * manufacturer. To see what barometer sensor is in your Crazyflie or Bolt
- * please check documentation on the Bitcraze webpage or check the parameter
- * group `imu_sensors`.
- */
 LOG_GROUP_START(baro)
-
-/**
- * @brief Altitude above Sea Level [m]
- */
-LOG_ADD_CORE(LOG_FLOAT, asl, &sensorData.baro.asl)
-
-/**
- * @brief Temperature [degrees Celsius]
- */
+LOG_ADD(LOG_FLOAT, asl, &sensorData.baro.asl)
 LOG_ADD(LOG_FLOAT, temp, &sensorData.baro.temperature)
-
-/**
- * @brief Air preassure [mbar]
- */
-LOG_ADD_CORE(LOG_FLOAT, pressure, &sensorData.baro.pressure)
+LOG_ADD(LOG_FLOAT, pressure, &sensorData.baro.pressure)
 LOG_GROUP_STOP(baro)
 
-/**
- * Log group for gyroscopes.
- *
- * For data on measurement noise please see information from the sensor
- * manufacturer. To see what gyroscope sensor is in your Crazyflie or Bolt
- * please check documentation on the Bitcraze webpage or check the parameter
- * group `imu_sensors`.
- */
 LOG_GROUP_START(gyro)
-
-/**
- * @brief Angular velocity (rotation) around the X-axis, after filtering [deg/s]
- */
-LOG_ADD_CORE(LOG_FLOAT, x, &sensorData.gyro.x)
-
-/**
- * @brief Angular velocity (rotation) around the Y-axis, after filtering [deg/s]
- */
-LOG_ADD_CORE(LOG_FLOAT, y, &sensorData.gyro.y)
-
-/**
- * @brief Angular velocity (rotation) around the Z-axis, after filtering [deg/s]
- */
-LOG_ADD_CORE(LOG_FLOAT, z, &sensorData.gyro.z)
+LOG_ADD(LOG_FLOAT, x, &sensorData.gyro.x)
+LOG_ADD(LOG_FLOAT, y, &sensorData.gyro.y)
+LOG_ADD(LOG_FLOAT, z, &sensorData.gyro.z)
 LOG_GROUP_STOP(gyro)
 
 #ifdef LOG_SEC_IMU
@@ -607,189 +652,55 @@ LOG_ADD(LOG_FLOAT, z, &sensorData.gyroSec.z)
 LOG_GROUP_STOP(gyroSec)
 #endif
 
-/**
- * Log group for magnetometer.
- *
- * Currently only present on Crazyflie 2.0
- */
 LOG_GROUP_START(mag)
-/**
- * @brief Magnetometer X axis, after filtering [gauss]
- */
-LOG_ADD_CORE(LOG_FLOAT, x, &sensorData.mag.x)
-/**
- * @brief Magnetometer Y axis, after filtering [gauss]
- */
-LOG_ADD_CORE(LOG_FLOAT, y, &sensorData.mag.y)
-/**
- * @brief Magnetometer Z axis, after filtering [gauss]
- */
-LOG_ADD_CORE(LOG_FLOAT, z, &sensorData.mag.z)
+LOG_ADD(LOG_FLOAT, x, &sensorData.mag.x)
+LOG_ADD(LOG_FLOAT, y, &sensorData.mag.y)
+LOG_ADD(LOG_FLOAT, z, &sensorData.mag.z)
 LOG_GROUP_STOP(mag)
 
 LOG_GROUP_START(controller)
 LOG_ADD(LOG_INT16, ctr_yaw, &control.yaw)
 LOG_GROUP_STOP(controller)
 
-/**
- * Log group for the state estimator, the currently estimated state of the platform.
- *
- * Note: all values may not be updated depending on which estimator that is used.
- */
 LOG_GROUP_START(stateEstimate)
+LOG_ADD(LOG_FLOAT, x, &state.position.x)
+LOG_ADD(LOG_FLOAT, y, &state.position.y)
+LOG_ADD(LOG_FLOAT, z, &state.position.z)
 
-/**
- * @brief The estimated position of the platform in the global reference frame, X [m]
- */
-LOG_ADD_CORE(LOG_FLOAT, x, &state.position.x)
+LOG_ADD(LOG_FLOAT, vx, &state.velocity.x)
+LOG_ADD(LOG_FLOAT, vy, &state.velocity.y)
+LOG_ADD(LOG_FLOAT, vz, &state.velocity.z)
 
-/**
- * @brief The estimated position of the platform in the global reference frame, Y [m]
- */
-LOG_ADD_CORE(LOG_FLOAT, y, &state.position.y)
+LOG_ADD(LOG_FLOAT, ax, &state.acc.x)
+LOG_ADD(LOG_FLOAT, ay, &state.acc.y)
+LOG_ADD(LOG_FLOAT, az, &state.acc.z)
 
-/**
- * @brief The estimated position of the platform in the global reference frame, Z [m]
- */
-LOG_ADD_CORE(LOG_FLOAT, z, &state.position.z)
+LOG_ADD(LOG_FLOAT, roll, &state.attitude.roll)
+LOG_ADD(LOG_FLOAT, pitch, &state.attitude.pitch)
+LOG_ADD(LOG_FLOAT, yaw, &state.attitude.yaw)
 
-/**
- * @brief The velocity of the Crazyflie in the global reference frame, X [m/s]
- */
-LOG_ADD_CORE(LOG_FLOAT, vx, &state.velocity.x)
-
-/**
- * @brief The velocity of the Crazyflie in the global reference frame, Y [m/s]
- */
-LOG_ADD_CORE(LOG_FLOAT, vy, &state.velocity.y)
-
-/**
- * @brief The velocity of the Crazyflie in the global reference frame, Z [m/s]
- */
-LOG_ADD_CORE(LOG_FLOAT, vz, &state.velocity.z)
-
-/**
- * @brief The acceleration of the Crazyflie in the global reference frame, X [Gs]
- */
-LOG_ADD_CORE(LOG_FLOAT, ax, &state.acc.x)
-
-/**
- * @brief The acceleration of the Crazyflie in the global reference frame, Y [Gs]
- */
-LOG_ADD_CORE(LOG_FLOAT, ay, &state.acc.y)
-
-/**
- * @brief The acceleration of the Crazyflie in the global reference frame, without considering gravity, Z [Gs]
- */
-LOG_ADD_CORE(LOG_FLOAT, az, &state.acc.z)
-
-/**
- * @brief Attitude, roll angle [deg]
- */
-LOG_ADD_CORE(LOG_FLOAT, roll, &state.attitude.roll)
-
-/**
- * @brief Attitude, pitch angle (legacy CF2 body coordinate system, where pitch is inverted) [deg]
- */
-LOG_ADD_CORE(LOG_FLOAT, pitch, &state.attitude.pitch)
-
-/**
- * @brief Attitude, yaw angle [deg]
- */
-LOG_ADD_CORE(LOG_FLOAT, yaw, &state.attitude.yaw)
-
-/**
- * @brief Attitude as a quaternion, x
- */
-LOG_ADD_CORE(LOG_FLOAT, qx, &state.attitudeQuaternion.x)
-
-/**
- * @brief Attitude as a quaternion, y
- */
-LOG_ADD_CORE(LOG_FLOAT, qy, &state.attitudeQuaternion.y)
-
-/**
- * @brief Attitude as a quaternion, z
- */
-LOG_ADD_CORE(LOG_FLOAT, qz, &state.attitudeQuaternion.z)
-
-/**
- * @brief Attitude as a quaternion, w
- */
-LOG_ADD_CORE(LOG_FLOAT, qw, &state.attitudeQuaternion.w)
+LOG_ADD(LOG_FLOAT, qx, &state.attitudeQuaternion.x)
+LOG_ADD(LOG_FLOAT, qy, &state.attitudeQuaternion.y)
+LOG_ADD(LOG_FLOAT, qz, &state.attitudeQuaternion.z)
+LOG_ADD(LOG_FLOAT, qw, &state.attitudeQuaternion.w)
 LOG_GROUP_STOP(stateEstimate)
 
-/**
- * Log group for the state estimator, compressed format. This flavour of the
- * estimator logs are defined with types that use less space and makes it possible to
- * add more logs to a log configuration.
- *
- * Note: all values may not be updated depending on which estimator that is used.
- */
 LOG_GROUP_START(stateEstimateZ)
-
-/**
- * @brief The position of the Crazyflie in the global reference frame, X [mm]
- */
-LOG_ADD(LOG_INT16, x, &stateCompressed.x)
-
-/**
- * @brief The position of the Crazyflie in the global reference frame, Y [mm]
- */
+LOG_ADD(LOG_INT16, x, &stateCompressed.x)                 // position - mm
 LOG_ADD(LOG_INT16, y, &stateCompressed.y)
-
-/**
- * @brief The position of the Crazyflie in the global reference frame, Z [mm]
- */
 LOG_ADD(LOG_INT16, z, &stateCompressed.z)
 
-/**
- * @brief The velocity of the Crazyflie in the global reference frame, X [mm/s]
- */
-LOG_ADD(LOG_INT16, vx, &stateCompressed.vx)
-
-/**
- * @brief The velocity of the Crazyflie in the global reference frame, Y [mm/s]
- */
+LOG_ADD(LOG_INT16, vx, &stateCompressed.vx)               // velocity - mm / sec
 LOG_ADD(LOG_INT16, vy, &stateCompressed.vy)
-
-/**
- * @brief The velocity of the Crazyflie in the global reference frame, Z [mm/s]
- */
 LOG_ADD(LOG_INT16, vz, &stateCompressed.vz)
 
-/**
- * @brief The acceleration of the Crazyflie in the global reference frame, X [mm/s]
- */
-LOG_ADD(LOG_INT16, ax, &stateCompressed.ax)
-
-/**
- * @brief The acceleration of the Crazyflie in the global reference frame, Y [mm/s]
- */
+LOG_ADD(LOG_INT16, ax, &stateCompressed.ax)               // acceleration - mm / sec^2
 LOG_ADD(LOG_INT16, ay, &stateCompressed.ay)
-
-/**
- * @brief The acceleration of the Crazyflie in the global reference frame, including gravity, Z [mm/s]
- */
 LOG_ADD(LOG_INT16, az, &stateCompressed.az)
 
-/**
- * @brief Attitude as a compressed quaternion, see see quatcompress.h for details
- */
-LOG_ADD(LOG_UINT32, quat, &stateCompressed.quat)
+LOG_ADD(LOG_UINT32, quat, &stateCompressed.quat)           // compressed quaternion, see quatcompress.h
 
-/**
- * @brief Roll rate (angular velocity) [milliradians / sec]
- */
-LOG_ADD(LOG_INT16, rateRoll, &stateCompressed.rateRoll)
-
-/**
- * @brief Pitch rate (angular velocity) [milliradians / sec]
- */
+LOG_ADD(LOG_INT16, rateRoll, &stateCompressed.rateRoll)   // angular velocity - milliradians / sec
 LOG_ADD(LOG_INT16, ratePitch, &stateCompressed.ratePitch)
-
-/**
- * @brief Yaw rate (angular velocity) [milliradians / sec]
- */
 LOG_ADD(LOG_INT16, rateYaw, &stateCompressed.rateYaw)
 LOG_GROUP_STOP(stateEstimateZ)

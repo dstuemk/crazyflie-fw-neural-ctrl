@@ -7,7 +7,7 @@
  *
  * LPS node firmware.
  *
- * Copyright 2021, Bitcraze AB
+ * Copyright 2017, Bitcraze AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published by
@@ -107,7 +107,7 @@ static void oaInit()
 
   isInit = true;
 
-  xTaskCreate(oaTask, OA_DECK_TASK_NAME, OA_DECK_TASK_STACKSIZE, NULL,
+  xTaskCreate(oaTask, OA_DECK_TASK_NAME, 2*configMINIMAL_STACK_SIZE, NULL,
               OA_DECK_TASK_PRI, NULL);
 }
 
@@ -170,8 +170,7 @@ static const DeckDriver oa_deck = {
   .pid = 0x0B,
   .name = "bcOA",
 
-  .usedGpio = 0,
-  .usedPeriph = DECK_USING_I2C,
+  .usedGpio = 0,  // FIXME: set the used pins
 
   .init = oaInit,
   .test = oaTest,

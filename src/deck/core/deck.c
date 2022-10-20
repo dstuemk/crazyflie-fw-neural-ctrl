@@ -29,10 +29,9 @@
 #include <string.h>
 
 #include "deck.h"
-#include "deck_memory.h"
 #include "debug.h"
 
-#ifdef CONFIG_DEBUG
+#ifdef DEBUG
   #define DECK_CORE_DBG_PRINT(fmt, ...)  DEBUG_PRINT(fmt, ## __VA_ARGS__)
 #else
   #define DECK_CORE_DBG_PRINT(...)
@@ -44,7 +43,6 @@ void deckInit()
 {
   deckDriverCount();
   deckInfoInit();
-  deckMemoryInit();
 
   int nDecks;
   int i;
