@@ -161,8 +161,7 @@ typedef enum {
     NEURALCONTROL_RNN_HIDDEN2_OUTPUT  = 0x0B,
     NEURALCONTROL_RNN_HIDDEN2_RKERNEL = 0x0C,
     NEURALCONTROL_RNN_OUTPUT_BIAS     = 0x0D,
-    NEURALCONTROL_RNN_OUTPUT_KERNEL   = 0x0E,
-    NEURALCONTROL_RNN_OUTPUT_OUTPUT   = 0x0F
+    NEURALCONTROL_RNN_OUTPUT_KERNEL   = 0x0E
 } NEURALCONTROL_RNN_LAYER;
 
 typedef enum {
@@ -219,7 +218,7 @@ static const char *neuralcontrol_layer_names[3][16] = {
         "RNN_HIDDEN2_RKERNEL",
         "RNN_OUTPUT_BIAS",
         "RNN_OUTPUT_KERNEL",
-        "RNN_OUTPUT_OUTPUT"
+        "---"
     },
     {
         "CASC_NORMAL_BETA",
@@ -390,7 +389,6 @@ static void neuralControlComputeNetOutput(float16_t* buffer) {
                 neuralcontrol_weights[NEURALCONTROL_RNN_HIDDEN2_KERNEL],
                 neuralcontrol_weights[NEURALCONTROL_RNN_HIDDEN2_RKERNEL],
                 neuralcontrol_weights[NEURALCONTROL_RNN_HIDDEN2_BIAS],
-                neuralcontrol_weights[NEURALCONTROL_RNN_OUTPUT_OUTPUT],
                 neuralcontrol_weights[NEURALCONTROL_RNN_OUTPUT_KERNEL],
                 neuralcontrol_weights[NEURALCONTROL_RNN_OUTPUT_BIAS]);
             break;
@@ -778,7 +776,8 @@ static void neuralControlTask(void *params) {
                 //neuralSendDroneState(droneState);
                 new_setpoint = hoverSetpoint;
                 commanderSetSetpoint(&new_setpoint, 5);
-                if (droneState.z > 0.8) 
+                if (droneState.z > 0.95 && droneState.z < 1.05
+                    && droneState.z_dot > -0.05 && droneState.z_dot < 0.05) 
                     neuralcontrol_state_next = NEURALCONTROL_HOVERING;
                 break;
 
