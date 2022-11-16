@@ -174,11 +174,6 @@ PROJ_OBJ += range.o app_handler.o static_mem.o app_channel.o
 PROJ_OBJ += logRingBuffer.o
 PROJ_OBJ += neural_control.o
 
-# keras2c
-#PROJ_OBJ += neural_forward.o
-#PROJ_OBJ += neural_recurrent.o
-#PROJ_OBJ += neural_cascaded.o
-
 # Stabilizer modules
 PROJ_OBJ += commander.o crtp_commander.o crtp_commander_rpyt.o
 PROJ_OBJ += crtp_commander_generic.o crtp_localization_service.o peer_localization.o
@@ -389,13 +384,6 @@ all: venv/ bin/ bin/dep bin/vendor check_submodules build
 build:
 # Each target is in a different line, so they are executed one after the other even when the processor has multiple cores (when the -j option for the make command is > 1). See: https://www.gnu.org/software/make/manual/html_node/Parallel.html
 	@. $(CRAZYFLIE_BASE)/venv/bin/activate
-	@cd $(CRAZYFLIE_BASE)/vendor/keras2c; \
-		rm -f neural_forward*; \
-		rm -f neural_recurrent*; \
-		rm -f neural_cascaded*; \
-		$(PYTHON) -m keras2c --dtype _Float16 -m $(CRAZYFLIE_BASE)/models/sensor/forward.h5 neural_forward; \
-		$(PYTHON) -m keras2c --dtype _Float16 -m $(CRAZYFLIE_BASE)/models/sensor/recurrent.h5 neural_recurrent; \
-		$(PYTHON) -m keras2c --dtype _Float16 -m $(CRAZYFLIE_BASE)/models/sensor/cascaded.h5 neural_cascaded; 
 	@$(MAKE) --no-print-directory clean_version CRAZYFLIE_BASE=$(CRAZYFLIE_BASE)
 	@$(MAKE) --no-print-directory compile CRAZYFLIE_BASE=$(CRAZYFLIE_BASE)
 	@$(MAKE) --no-print-directory print_version CRAZYFLIE_BASE=$(CRAZYFLIE_BASE)

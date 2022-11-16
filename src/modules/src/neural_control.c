@@ -12,13 +12,8 @@
 #include <math.h>
 #include <string.h>
 
-#include "neural_forward.h"
-#include "neural_recurrent.h"
-#include "neural_cascaded.h"
-
-#include "neural_forward.c"
-#include "neural_recurrent.c"
-#include "neural_cascaded.c"
+#define k2c_float float16_t
+#include "k2c_definitions.h"
 
 #define max(a,b)            (((a) > (b)) ? (a) : (b))
 #define min(a,b)            (((a) < (b)) ? (a) : (b))
@@ -76,6 +71,7 @@ typedef enum {
     NEURALCONTROL_CMD_ADJUST= 0x05,
     NEURALCONTROL_CMD_NONE  = 0x06,
     NEURALCONTROL_CMD_CIRCLE= 0x07,
+    NEURALCONTROL_CMD_CONFIG= 0x08,
 } NEURALCONTROL_CMD_ID;
 
 typedef struct {
@@ -115,215 +111,386 @@ static const char *neuralcontrol_state_names[] = {
     "CIRCLING"
 };
 
-typedef enum {
-    NEURALCONTROL_NET_FF    = 0x00,
-    NEURALCONTROL_NET_RNN   = 0x01,
-    NEURALCONTROL_NET_CASC  = 0x02,
-    NEURALCONTROL_NET_NONE  = 0x03
-} NEURALCONTROL_NET;
-
-static const char *neuralcontrol_net_names[] = {
-    "NET_FF",
-    "NET_RNN",
-    "NET_CASC",
-    "NET_NONE"
-};
+/******************************************************/
+/** Neural Network Code *******************************/
 
 typedef enum {
-    NEURALCONTROL_FF_NORMAL_BETA    = 0x00,
-    NEURALCONTROL_FF_NORMAL_GAMMA   = 0x01,
-    NEURALCONTROL_FF_NORMAL_MEAN    = 0x02,
-    NEURALCONTROL_FF_NORMAL_OUTPUT  = 0x03,
-    NEURALCONTROL_FF_NORMAL_STDEV   = 0x04,
-    NEURALCONTROL_FF_HIDDEN1_BIAS   = 0x05,
-    NEURALCONTROL_FF_HIDDEN1_KERNEL = 0x06,
-    NEURALCONTROL_FF_HIDDEN1_OUTPUT = 0x07,
-    NEURALCONTROL_FF_HIDDEN2_BIAS   = 0x08,
-    NEURALCONTROL_FF_HIDDEN2_KERNEL = 0x09,
-    NEURALCONTROL_FF_HIDDEN2_OUTPUT = 0x0A,
-    NEURALCONTROL_FF_OUTPUT_BIAS    = 0x0B,
-    NEURALCONTROL_FF_OUTPUT_KERNEL  = 0x0C,
-    NEURALCONTROL_FF_OUTPUT_OUTPUT  = 0x0D
-} NEURALCONTROL_FF_LAYER;
+    LINEAR  	= 0,
+    RELU        = 1
+} netlib_activation_t;
 
-typedef enum {
-    NEURALCONTROL_RNN_NORMAL_BETA     = 0x00,
-    NEURALCONTROL_RNN_NORMAL_GAMMA    = 0x01,
-    NEURALCONTROL_RNN_NORMAL_MEAN     = 0x02,
-    NEURALCONTROL_RNN_NORMAL_OUTPUT   = 0x03,
-    NEURALCONTROL_RNN_NORMAL_STDEV    = 0x04,
-    NEURALCONTROL_RNN_HIDDEN1_BIAS    = 0x05,
-    NEURALCONTROL_RNN_HIDDEN1_KERNEL  = 0x06,
-    NEURALCONTROL_RNN_HIDDEN1_OUTPUT  = 0x07,
-    NEURALCONTROL_RNN_HIDDEN1_RKERNEL = 0x08,
-    NEURALCONTROL_RNN_HIDDEN2_BIAS    = 0x09,
-    NEURALCONTROL_RNN_HIDDEN2_KERNEL  = 0x0A,
-    NEURALCONTROL_RNN_HIDDEN2_OUTPUT  = 0x0B,
-    NEURALCONTROL_RNN_HIDDEN2_RKERNEL = 0x0C,
-    NEURALCONTROL_RNN_OUTPUT_BIAS     = 0x0D,
-    NEURALCONTROL_RNN_OUTPUT_KERNEL   = 0x0E
-} NEURALCONTROL_RNN_LAYER;
+static int netlib_activation(netlib_activation_t activation, 
+  k2c_tensor input, k2c_tensor output) {
+    switch(activation) {
+        case LINEAR:
+        memcpy(output.array, input.array, input.numel*sizeof(input.array[0]));
+        k2c_linear(output.array, output.numel);
+        return 0;
 
-typedef enum {
-    NEURALCONTROL_CASC_NORMAL_BETA     = 0x00,
-    NEURALCONTROL_CASC_NORMAL_GAMMA    = 0x01,
-    NEURALCONTROL_CASC_NORMAL_MEAN     = 0x02,
-    NEURALCONTROL_CASC_NORMAL_OUTPUT   = 0x03,
-    NEURALCONTROL_CASC_NORMAL_STDEV    = 0x04,
-    NEURALCONTROL_CASC_CONCAT12_OUTPUT = 0x05,
-    NEURALCONTROL_CASC_HIDDEN1_BIAS    = 0x06,
-    NEURALCONTROL_CASC_HIDDEN1_KERNEL  = 0x07,
-    NEURALCONTROL_CASC_HIDDEN1_OUTPUT  = 0x08,
-    NEURALCONTROL_CASC_HIDDEN1_RKERNEL = 0x09,
-    NEURALCONTROL_CASC_HIDDEN2_BIAS    = 0x0A,
-    NEURALCONTROL_CASC_HIDDEN2_KERNEL  = 0x0B,
-    NEURALCONTROL_CASC_HIDDEN2_OUTPUT  = 0x0C,
-    NEURALCONTROL_CASC_OUTPUT_BIAS     = 0x0D,
-    NEURALCONTROL_CASC_OUTPUT_KERNEL   = 0x0E,
-    NEURALCONTROL_CASC_OUTPUT_OUTPUT   = 0x0F
-} NEURALCONTROL_CASC_LAYER;
-
-static const char *neuralcontrol_layer_names[3][16] = {
-    {
-        "FF_NORMAL_BETA",
-        "FF_NORMAL_GAMMA",
-        "FF_NORMAL_MEAN",
-        "FF_NORMAL_OUTPUT",
-        "FF_NORMAL_STDEV",
-        "FF_HIDDEN1_BIAS",
-        "FF_HIDDEN1_KERNEL",
-        "FF_HIDDEN1_OUTPUT",
-        "FF_HIDDEN2_BIAS",
-        "FF_HIDDEN2_KERNEL",
-        "FF_HIDDEN2_OUTPUT",
-        "FF_OUTPUT_BIAS",
-        "FF_OUTPUT_KERNEL",
-        "FF_OUTPUT_OUTPUT",
-        "---",
-        "---"
-    },
-    {
-        "RNN_NORMAL_BETA",
-        "RNN_NORMAL_GAMMA",
-        "RNN_NORMAL_MEAN",
-        "RNN_NORMAL_OUTPUT",
-        "RNN_NORMAL_STDEV",
-        "RNN_HIDDEN1_BIAS",
-        "RNN_HIDDEN1_KERNEL",
-        "RNN_HIDDEN1_OUTPUT",
-        "RNN_HIDDEN1_RKERNEL",
-        "RNN_HIDDEN2_BIAS",
-        "RNN_HIDDEN2_KERNEL",
-        "RNN_HIDDEN2_OUTPUT",
-        "RNN_HIDDEN2_RKERNEL",
-        "RNN_OUTPUT_BIAS",
-        "RNN_OUTPUT_KERNEL",
-        "---"
-    },
-    {
-        "CASC_NORMAL_BETA",
-        "CASC_NORMAL_GAMMA",
-        "CASC_NORMAL_MEAN",
-        "CASC_NORMAL_OUTPUT",
-        "CASC_NORMAL_STDEV",
-        "CASC_CONCAT12_OUTPUT",
-        "CASC_HIDDEN1_BIAS",
-        "CASC_HIDDEN1_KERNEL",
-        "CASC_HIDDEN1_OUTPUT",
-        "CASC_HIDDEN1_RKERNEL",
-        "CASC_HIDDEN2_BIAS",
-        "CASC_HIDDEN2_KERNEL",
-        "CASC_HIDDEN2_OUTPUT",
-        "CASC_OUTPUT_BIAS",
-        "CASC_OUTPUT_KERNEL",
-        "CASC_OUTPUT_OUTPUT"
+        case RELU:
+        memcpy(output.array, input.array, input.numel*sizeof(input.array[0]));
+        k2c_relu(output.array, output.numel);
+        return 0;
     }
+    return -1;
+}
+
+typedef enum {
+    NORMALIZATION   = 0,
+    DENSE           = 1,
+    LSTM            = 2,
+    ACTIVATION      = 3
+} netlib_layer_type_t;
+
+typedef struct {
+    int n_parameters;
+    netlib_layer_type_t netlib_layer_type;
+    k2c_tensor input;
+    k2c_tensor output;
+    int _write_pos;
+    unsigned char parameters[0];
+} netlib_layer_t;
+
+static k2c_float netlib_work_mem[5300];
+
+static int netlib_layer_inference(netlib_layer_t* layer) {
+    switch(layer->netlib_layer_type) {
+        case NORMALIZATION:
+        {   // parameters [mean,std,gamma,beta]
+            int n = layer->input.shape[1];       
+            k2c_tensor batch_normalization_mean = 
+              { &((k2c_float*)layer->parameters)[0*n],1,n,{n, 1, 1, 1, 1} }; 
+            k2c_tensor batch_normalization_stdev = 
+              { &((k2c_float*)layer->parameters)[1*n],1,n,{n, 1, 1, 1, 1} }; 
+            k2c_tensor batch_normalization_gamma = 
+              { &((k2c_float*)layer->parameters)[2*n],1,n,{n, 1, 1, 1, 1} }; 
+            k2c_tensor batch_normalization_beta = 
+              { &((k2c_float*)layer->parameters)[3*n],1,n,{n, 1, 1, 1, 1} }; 
+            k2c_batch_norm(
+                &(layer->output),
+                &(layer->input),
+                &batch_normalization_mean,
+                &batch_normalization_stdev,
+                &batch_normalization_gamma,
+                &batch_normalization_beta,
+                1); 
+        }
+        break;
+
+        case DENSE:
+        {   // parameters [kernel,bias] 
+            int n_in = layer->input.shape[1];
+            int n_out = layer->output.shape[1];
+            k2c_tensor dense_kernel = 
+              { &((k2c_float*)layer->parameters)[0], 2, n_in*n_out,{n_in,n_out, 1, 1, 1} }; 
+            k2c_tensor dense_bias   = 
+              { &((k2c_float*)layer->parameters)[n_in*n_out],1,n_out,{n_out, 1, 1, 1, 1} }; 
+            k2c_dense(
+                &(layer->output),
+                &(layer->input),
+                &dense_kernel, 
+	            &dense_bias,
+                k2c_linear,
+                netlib_work_mem); 
+        }
+        break;
+
+        case LSTM:
+        {   // parameters [kernel,r_kernel,bias,c_state,h_state]
+            int n_in = layer->input.shape[1];
+            int n_out = layer->output.shape[1];
+            int offset = 0;
+            int sz = 4*n_in*n_out;
+            k2c_tensor lstm_kernel = 
+              {&((k2c_float*)layer->parameters)[offset],2,sz,{4*n_in,n_out, 1, 1, 1}}; 
+            offset += sz;
+            sz = 4*n_out*n_out;
+            k2c_tensor lstm_recurrent_kernel = 
+              {&((k2c_float*)layer->parameters)[offset],2,sz,{4*n_out,n_out, 1, 1, 1}}; 
+            offset += sz;
+            sz = 4*n_out;
+            k2c_tensor lstm_bias = 
+              {&((k2c_float*)layer->parameters)[offset],1,sz,{sz, 1, 1, 1, 1}}; 
+            offset += sz;
+            k2c_float* lstm_state = &((k2c_float*)layer->parameters)[offset]; 
+            k2c_lstm(
+                &(layer->output),
+                &(layer->input),
+                lstm_state,
+                &lstm_kernel, 
+                &lstm_recurrent_kernel,
+                &lstm_bias,
+                netlib_work_mem, 
+                0,
+                1, 
+                k2c_sigmoid,
+                k2c_tanh); 
+
+        }
+        break;
+
+        case ACTIVATION:
+        // parameter (byte): 0=linear, 1=relu
+        return netlib_activation(((k2c_float*)layer->parameters)[0],layer->input,layer->output);
+    }
+    return 0;
+}
+
+#define NETLIB_MAX_LAYERS 32
+
+static struct {
+    netlib_layer_t* layers[NETLIB_MAX_LAYERS];
+    int num_layers;
+} netlib_model;
+
+static void netlib_reset_states() {
+    for (int i=0; i<netlib_model.num_layers; i++) {
+        netlib_layer_t* layer = netlib_model.layers[i];
+        switch (layer->netlib_layer_type)
+        {
+            case LSTM:
+            {
+                int state_dim = 2*layer->output.numel;
+                k2c_float* states = &((k2c_float*) layer->parameters)
+                    [layer->n_parameters - state_dim];
+                for (int state_idx=0; state_idx<state_dim; state_idx++) {
+                    states[state_idx] = 0;
+                }
+            }
+            break;
+            
+            default:
+            break;
+        }
+    }
+}
+
+static void netlib_inferene(k2c_float* input, k2c_float* output) {
+    if (0 == netlib_model.num_layers) return;
+    netlib_layer_t* layer = NULL;
+    for (int i=0; i<netlib_model.num_layers; i++) {
+        //DEBUG_PRINT("Prepare Layer %d ... ", i);
+        //vTaskDelay(1);
+        layer = netlib_model.layers[i];
+        if (0 == i)
+            memcpy(layer->input.array, input, sizeof(input[0])*layer->input.shape[1]);
+        else {
+            netlib_layer_t* prev_layer = netlib_model.layers[i-1];
+            memcpy(layer->input.array, prev_layer->output.array, 
+              sizeof(input[0])*layer->input.shape[1]);
+        }
+        //DEBUG_PRINT("Compute Layer %d\n", i);
+        //vTaskDelay(1);
+        netlib_layer_inference(layer);
+    }
+    memcpy(output, layer->output.array, sizeof(output[0])*layer->output.numel);
+}
+
+static void netlib_init_model() {
+    netlib_model.num_layers = 0;
+    for (int i=0; i<sizeof(netlib_work_mem)/sizeof(netlib_work_mem[0]); i++)
+        netlib_work_mem[i] = 0.f;
+}
+
+static void netlib_reset() {
+    for (int i=0; i<netlib_model.num_layers; i++) {
+        netlib_layer_t* layer = netlib_model.layers[i];
+        free(layer->input.array);
+        free(layer->output.array);
+        free(layer);
+    }
+    netlib_model.num_layers = 0;
+    for (int i=0; i<sizeof(netlib_work_mem)/sizeof(netlib_work_mem[0]); i++)
+        netlib_work_mem[i] = 0.f;
+}
+
+static int netlib_write_layer(unsigned char* bytes_in, int n_bytes) {
+    // New Layer
+    int layer_idx  = netlib_model.num_layers-1;
+    if (0 > layer_idx || netlib_model.layers[layer_idx]->_write_pos < 0) {
+        // New layer
+        if (NETLIB_MAX_LAYERS - 1 == netlib_model.num_layers) return -1;
+        if (n_bytes < 4*sizeof(int)) return -1;
+        int n_parameters = ((int*)(bytes_in))[0];
+        int netlib_layer_type   = ((int*)(bytes_in))[1];
+        int input_dim    = ((int*)(bytes_in))[2];
+        int output_dim   = ((int*)(bytes_in))[3];
+        int _layer_idx   = netlib_model.num_layers;
+        DEBUG_PRINT("New layer\n\t- index %d\n\t- type %d", 
+            _layer_idx, netlib_layer_type);
+        DEBUG_PRINT("\n\t- input dim %d", input_dim);
+        DEBUG_PRINT("\n\t- output dim %d\n\t- # parameters %d\n", 
+            output_dim, n_parameters);
+        netlib_layer_t** _layer = &netlib_model.layers[_layer_idx];
+        *_layer = malloc(sizeof(netlib_layer_t) + sizeof(k2c_float)*n_parameters);
+        (*_layer)->n_parameters = n_parameters;
+        (*_layer)->netlib_layer_type = netlib_layer_type;
+        (*_layer)->input = (k2c_tensor) { 
+          malloc(sizeof(k2c_float) * input_dim),
+          2, input_dim, {1,input_dim,1,1,1} };
+        (*_layer)->output = (k2c_tensor) { 
+          malloc(sizeof(k2c_float) * output_dim),
+          2, output_dim, {1,output_dim,1,1,1} };
+        (*_layer)->_write_pos = 0;
+        n_bytes -= 4*sizeof(int);
+        bytes_in += 4*sizeof(int);
+        netlib_model.num_layers++;
+    }
+
+    // Additional Payload
+    layer_idx  = netlib_model.num_layers-1;
+    netlib_layer_t* layer = netlib_model.layers[layer_idx]; 
+    for (int byte_idx=0; byte_idx < n_bytes; byte_idx++) {
+        int write_pos = layer->_write_pos;
+        layer->parameters[write_pos] = bytes_in[byte_idx];
+        layer->_write_pos++;
+        if (layer->_write_pos % (100*sizeof(k2c_float)) == sizeof(k2c_float)) {
+            k2c_float param_val = *((k2c_float*)&layer->parameters[layer->_write_pos-sizeof(k2c_float)]);
+            DEBUG_PRINT("\t- Receive parameter %d: %f\n",
+                write_pos / sizeof(k2c_float), (double)param_val);
+        }
+        if (layer->_write_pos == layer->n_parameters*sizeof(k2c_float)) {
+            // Mark layer as finished
+            layer->_write_pos = -1;
+            // New layer must begin in new data frame
+            int ret_val = byte_idx == n_bytes - 1 ? 0 : -1;
+            DEBUG_PRINT("\t- Layer received success %d\n", ret_val);
+            return ret_val;
+        }
+    }
+    return 0;
+}
+
+/** End of: Neural Network Code ***********************/
+/******************************************************/
+
+typedef enum {
+    SENSOR = 0,
+    STATE  = 1
+} NEURALCONTROL_OBS_LEVEL;
+
+static const char* neuralcontrol_obs_level_names[] = {
+    "SENSOR",
+    "STATE"
 };
 
+typedef enum {
+    X_POS =  0, Y_POS =  1, Z_POS =  2,             // lin. position
+    Q_A   =  3, Q_B   =  4, Q_C   =  5, Q_D   =  6, // quat. orientation 
+    X_VEL =  7, Y_VEL =  8, Z_VEL =  9,             // lin. velocity
+    X_ACC = 10, Y_ACC = 11, Z_ACC = 12,             // lin. acceleration
+    R_DOT = 13, P_DOT = 14, Y_DOT = 15,             // angular velocity
+    E_X   = 16, E_Y   = 17, E_Z   = 18,             // error to reference
+    M1    = 19, M2    = 20, M3    = 21, M4    = 22, // last action
+} NEURALCONTOL_OBS_VALUE;
 
-#define NEURALCONTROL_NET_MAX_H 5
+static const char* neuralcontrol_obs_value_names[] = {
+    "X_POS", "Y_POS", "Z_POS",
+    "Q_A"  , "Q_B"  , "Q_C"  , "Q_D",
+    "X_VEL", "Y_VEL", "Z_VEL",
+    "X_ACC", "Y_ACC", "Z_ACC",
+    "R_DOT", "P_DOT", "Y_DOT",
+    "E_X"  , "E_Y"  , "E_Z"  ,
+    "M1"  ,  "M2"   , "M3"   , "M4"
+};
 
-static float16_t neuralcontrol_net_input[14*NEURALCONTROL_NET_MAX_H] = {0};
+static int neuralcontrol_obs_mapping[23] = { 0 };
+
+/* Use this Macro to select observations.
+ * e.g.  NEURALCONTROL_SET_MAPPING(X_POS,Y_POS,Z_POS) 
+ */
+#define NEURALCONTROL_SET_MAPPING(...) { \
+    memset(neuralcontrol_obs_mapping, 0, sizeof(neuralcontrol_obs_mapping)); \
+    for(int i=0; i<sizeof((int[]){__VA_ARGS__})/sizeof(int); i++) \
+      neuralcontrol_obs_mapping[((int[]){__VA_ARGS__})[i]] = 1; }
+
+static NEURALCONTROL_OBS_LEVEL neuralcontrol_obs_level = SENSOR;
 static int neuralcontrol_net_H = 0;
-static k2c_tensor neuralcontrol_ff_input = { 0 };
-static k2c_tensor neuralcontrol_rnn_input = { 0 };
+static k2c_float neuralcontrol_net_input[200] = { 0 };
 
-static void neuralControlInitNet() {
-    neuralcontrol_net_H = neural_forward_input_shapes[0][2] / 14;
-    k2c_tensor _neuralcontrol_ff_input = {
-        &neuralcontrol_net_input[0],
-        2,
-        14*neuralcontrol_net_H,
-        { 1,14*neuralcontrol_net_H, 1, 1, 1}
-    };
-    neuralcontrol_ff_input = _neuralcontrol_ff_input;
-    k2c_tensor _neuralcontrol_rnn_input = {
-        &neuralcontrol_net_input[14*(neuralcontrol_net_H - 1)],
-        2,
-        14,
-        { 1,14, 1, 1, 1}
-    };
-    neuralcontrol_rnn_input = _neuralcontrol_rnn_input;
+static void neuralControlConfigure(int history_size, NEURALCONTROL_OBS_LEVEL obs_level) {
+    DEBUG_PRINT("Configure H=%d, level=%s\n", 
+      history_size, neuralcontrol_obs_level_names[obs_level]);
+    neuralcontrol_net_H = history_size;
+    neuralcontrol_obs_level = obs_level;
+    switch (obs_level) {
+        case SENSOR:
+        NEURALCONTROL_SET_MAPPING( 
+            Z_POS,                  
+            X_ACC, Y_ACC, Z_ACC,    
+            R_DOT, P_DOT, Y_DOT,    
+            E_X  , E_Y  , E_Z  ,    
+            M1   , M2   , M3   , M4 
+        );
+        break;
 
-    neural_recurrent_reset_states();
+        case STATE:
+        NEURALCONTROL_SET_MAPPING( 
+            X_POS, Y_POS, Z_POS, 
+            Q_A  , Q_B  , Q_C  , Q_D  ,                
+            X_VEL, Y_VEL, Z_VEL,    
+            R_DOT, P_DOT, Y_DOT,    
+            E_X  , E_Y  , E_Z  ,    
+            M1   , M2   , M3   , M4 
+        );
+        break;
+    }
+
+    int count_dim = 0;
+    DEBUG_PRINT("Observation entries:");
+    for (int i=0; 
+      i<sizeof(neuralcontrol_obs_value_names)/sizeof(neuralcontrol_obs_value_names[0]); 
+      i++){
+        if (neuralcontrol_obs_mapping[i]) {
+            DEBUG_PRINT("\n\t- %s", neuralcontrol_obs_value_names[i]);
+            count_dim++;
+        }
+        if (i%5 == 0) vTaskDelay(1);
+    }
+    int total_dim = count_dim*history_size;
+    DEBUG_PRINT("\nRequired input size: %d\n", total_dim);
 }
 
 static void neuralControlUpdateNetInput(neural_drone_state_t droneState, uint32_t netStartTicks) {
-    uint16_t offset = (neuralcontrol_net_H - 1) * 14;
-    memmove(&neuralcontrol_net_input[0], 
-      &neuralcontrol_net_input[14], 
-      sizeof(neuralcontrol_net_input) - 14*sizeof(float16_t));
-    neuralcontrol_net_input[0 + offset] = droneState.z;
-    neuralcontrol_net_input[1 + offset] = droneState.acc_x;
-    neuralcontrol_net_input[2 + offset] = droneState.acc_y;
-    neuralcontrol_net_input[3 + offset] = droneState.acc_z;
-    neuralcontrol_net_input[4 + offset] = droneState.roll_dot;
-    neuralcontrol_net_input[5 + offset] = droneState.pitch_dot;
-    neuralcontrol_net_input[6 + offset] = droneState.yaw_dot;
+    // No model -> nothing to do TODO
+    if (netlib_model.num_layers == 0)
+        return; 
 
+    // Calculate input dimension
+    int inp_dim = netlib_model.layers[0]->input.numel / neuralcontrol_net_H;
+    uint16_t offset = (neuralcontrol_net_H - 1) * inp_dim;
+
+    // Shift by one time step
+    memmove(&neuralcontrol_net_input[0], 
+      &neuralcontrol_net_input[inp_dim], 
+      sizeof(neuralcontrol_net_input) - inp_dim*sizeof(float16_t));
+
+    // Error to reference
     float netTime = (float)(xTaskGetTickCount() - netStartTicks) / (float)M2T(1000);
     float alpha = 2.0f * (float)M_PI / 3.0f;
-    neuralcontrol_net_input[7 + offset] = 0.25f * (float)(1.0 - cos(netTime * alpha)) - droneState.x;
-    neuralcontrol_net_input[8 + offset] = 0.25f * (float)sin(netTime * alpha) - droneState.y;
-    neuralcontrol_net_input[9 + offset] = 1.0f - droneState.z;
-    
-    neuralcontrol_net_input[10 + offset] = droneState.M1; 
-    neuralcontrol_net_input[11 + offset] = droneState.M2; 
-    neuralcontrol_net_input[12 + offset] = droneState.M3; 
-    neuralcontrol_net_input[13 + offset] = droneState.M4; 
-}
+    k2c_float err_x = 0.25f * (float)(1.0 - cos(netTime * alpha)) - droneState.x;
+    k2c_float err_y = 0.25f * (float)sin(netTime * alpha) - droneState.y;
+    k2c_float err_z = 1.0f - droneState.z;
 
-static NEURALCONTROL_NET neuralcontrol_current_net = NEURALCONTROL_NET_NONE;
-static float16_t *neuralcontrol_weights[16] = { NULL }; 
-
-static void neuralControlBuildNet(NEURALCONTROL_NET net_type, int8_t layer_idx, 
-  uint16_t layer_sz, uint16_t param_idx, float16_t param_val) {
-    // Save type of neural network (recurrent, feed-forward or cascaded)
-    neuralcontrol_current_net = net_type;
-
-    // Initialize building phase
-    if (layer_idx == 0 && param_idx == 0) {
-        DEBUG_PRINT("Start receiving network: %s\n", neuralcontrol_net_names[net_type]);
-        // Wipe out memory (if allocated)
-        for (uint8_t idx=0; 
-             idx < sizeof(neuralcontrol_weights) / sizeof(neuralcontrol_weights[0]); 
-             idx++) {
-            if (neuralcontrol_weights[idx] != NULL) {
-                free(neuralcontrol_weights[idx]);
-                neuralcontrol_weights[idx] = NULL;
-            }
+    // Add values to input
+    k2c_float obs_values[] = {
+        droneState.x           , droneState.y           , droneState.z                                    ,
+        droneState.quaternion_a, droneState.quaternion_b, droneState.quaternion_c, droneState.quaternion_d,
+        droneState.x_dot       , droneState.y_dot       , droneState.z_dot                                ,
+        droneState.acc_x       , droneState.acc_y       , droneState.acc_z                                ,
+        droneState.roll_dot    , droneState.pitch_dot   , droneState.yaw_dot                              ,
+        err_x                  , err_y                  , err_z                                           ,
+        droneState.M1          , droneState.M2          , droneState.M3          , droneState.M4
+    };
+    int counter = 0;
+    for (int i=0; i<sizeof(obs_values)/sizeof(obs_values[0]); i++) {
+        if (neuralcontrol_obs_mapping[i]) {
+            neuralcontrol_net_input[counter + offset] = obs_values[i];
+            counter++;
         }
     }
-
-    // Copy parameters
-    if (param_idx % (layer_sz / 10) == 0)
-        DEBUG_PRINT("Receiving Paramter %d / %d (%f) of %s\n", 
-          param_idx, layer_sz, (double)param_val, neuralcontrol_layer_names[net_type][layer_idx]);
-    if (param_idx == 0) {
-        neuralcontrol_weights[layer_idx] = malloc(sizeof(float16_t) * layer_sz);
-    }
-    neuralcontrol_weights[layer_idx][param_idx] = param_val;
 }
+
 
 static int32_t neuralcontrol_compute_nops;
 static int32_t neuralcontrol_compute_low;
@@ -339,7 +506,6 @@ static void neuralControlComputeSpeedInit() {
 
 static void neuralControlComputeSlower() {
     neuralcontrol_compute_low = neuralcontrol_compute_nops;
-    //neuralcontrol_compute_nops = ((float)neuralcontrol_compute_high - neuralcontrol_compute_low) / 2.f + neuralcontrol_compute_low;
     neuralcontrol_compute_nops = /* Increase execution time less agressively */
         ceilf((float)(neuralcontrol_compute_high - neuralcontrol_compute_low) / 8.f) + neuralcontrol_compute_low;
 }
@@ -351,72 +517,7 @@ static void neuralControlComputeFaster() {
 }
 
 static void neuralControlComputeNetOutput(float16_t* buffer) {
-    k2c_tensor c_dense = {buffer,2,4,{1,4,1,1,1}}; 
-    switch(neuralcontrol_current_net) {
-        case NEURALCONTROL_NET_FF:
-            neural_forward(
-                &neuralcontrol_ff_input,
-                &c_dense,
-                neuralcontrol_weights[NEURALCONTROL_FF_NORMAL_OUTPUT],
-                neuralcontrol_weights[NEURALCONTROL_FF_NORMAL_MEAN],
-                neuralcontrol_weights[NEURALCONTROL_FF_NORMAL_STDEV],
-                neuralcontrol_weights[NEURALCONTROL_FF_NORMAL_GAMMA],
-                neuralcontrol_weights[NEURALCONTROL_FF_NORMAL_BETA],
-                neuralcontrol_weights[NEURALCONTROL_FF_HIDDEN1_OUTPUT],
-                neuralcontrol_weights[NEURALCONTROL_FF_HIDDEN1_KERNEL],
-                neuralcontrol_weights[NEURALCONTROL_FF_HIDDEN1_BIAS],
-                neuralcontrol_weights[NEURALCONTROL_FF_HIDDEN2_OUTPUT],
-                neuralcontrol_weights[NEURALCONTROL_FF_HIDDEN2_KERNEL],
-                neuralcontrol_weights[NEURALCONTROL_FF_HIDDEN2_BIAS],
-                neuralcontrol_weights[NEURALCONTROL_FF_OUTPUT_OUTPUT],
-                neuralcontrol_weights[NEURALCONTROL_FF_OUTPUT_KERNEL],
-                neuralcontrol_weights[NEURALCONTROL_FF_OUTPUT_BIAS]);
-            break;
-        case NEURALCONTROL_NET_RNN:
-            neural_recurrent(
-                &neuralcontrol_rnn_input,
-                &c_dense,
-                neuralcontrol_weights[NEURALCONTROL_RNN_NORMAL_OUTPUT],
-                neuralcontrol_weights[NEURALCONTROL_RNN_NORMAL_MEAN],
-                neuralcontrol_weights[NEURALCONTROL_RNN_NORMAL_STDEV],
-                neuralcontrol_weights[NEURALCONTROL_RNN_NORMAL_GAMMA],
-                neuralcontrol_weights[NEURALCONTROL_RNN_NORMAL_BETA],
-                neuralcontrol_weights[NEURALCONTROL_RNN_HIDDEN1_OUTPUT],
-                neuralcontrol_weights[NEURALCONTROL_RNN_HIDDEN1_KERNEL],
-                neuralcontrol_weights[NEURALCONTROL_RNN_HIDDEN1_RKERNEL],
-                neuralcontrol_weights[NEURALCONTROL_RNN_HIDDEN1_BIAS],
-                neuralcontrol_weights[NEURALCONTROL_RNN_HIDDEN2_OUTPUT],
-                neuralcontrol_weights[NEURALCONTROL_RNN_HIDDEN2_KERNEL],
-                neuralcontrol_weights[NEURALCONTROL_RNN_HIDDEN2_RKERNEL],
-                neuralcontrol_weights[NEURALCONTROL_RNN_HIDDEN2_BIAS],
-                neuralcontrol_weights[NEURALCONTROL_RNN_OUTPUT_KERNEL],
-                neuralcontrol_weights[NEURALCONTROL_RNN_OUTPUT_BIAS]);
-            break;
-        case NEURALCONTROL_NET_CASC:
-            neural_cascaded(
-                &neuralcontrol_rnn_input,
-                &c_dense,
-                neuralcontrol_weights[NEURALCONTROL_CASC_NORMAL_OUTPUT],
-                neuralcontrol_weights[NEURALCONTROL_CASC_NORMAL_MEAN],
-                neuralcontrol_weights[NEURALCONTROL_CASC_NORMAL_STDEV],
-                neuralcontrol_weights[NEURALCONTROL_CASC_NORMAL_GAMMA],
-                neuralcontrol_weights[NEURALCONTROL_CASC_NORMAL_BETA],
-                neuralcontrol_weights[NEURALCONTROL_CASC_HIDDEN1_OUTPUT],
-                neuralcontrol_weights[NEURALCONTROL_CASC_HIDDEN1_KERNEL],
-                neuralcontrol_weights[NEURALCONTROL_CASC_HIDDEN1_RKERNEL],
-                neuralcontrol_weights[NEURALCONTROL_CASC_HIDDEN1_BIAS],
-                neuralcontrol_weights[NEURALCONTROL_CASC_CONCAT12_OUTPUT],
-                neuralcontrol_weights[NEURALCONTROL_CASC_HIDDEN2_OUTPUT],
-                neuralcontrol_weights[NEURALCONTROL_CASC_HIDDEN2_KERNEL],
-                neuralcontrol_weights[NEURALCONTROL_CASC_HIDDEN2_BIAS],
-                neuralcontrol_weights[NEURALCONTROL_CASC_OUTPUT_OUTPUT],
-                neuralcontrol_weights[NEURALCONTROL_CASC_OUTPUT_KERNEL],
-                neuralcontrol_weights[NEURALCONTROL_CASC_OUTPUT_BIAS]);
-            break;
-        case NEURALCONTROL_NET_NONE:
-            break;
-    }
-
+    netlib_inferene(neuralcontrol_net_input, buffer);
     for (int32_t nop_ctr = 0; nop_ctr < neuralcontrol_compute_nops; nop_ctr++) {
         asm volatile ("nop");
     }
@@ -527,17 +628,18 @@ static void neuralReceiveCommand(neural_control_cmd_t *cmd_buffer) {
             case NEURALCONTROL_CMD_TRANSF:
             {
                 cmd_buffer->cmd_id = NEURALCONTROL_CMD_TRANSF;
-                const int16_t values_per_packet = 10;
-                int8_t net_type  = packet.data[1] >> 4;
-                int8_t layer_idx = packet.data[1] & 0x0F;
-                uint16_t layer_sz = *((uint16_t*)(&packet.data[2]));
-                uint16_t param_idx = *((uint16_t*)(&packet.data[4]));
-                for (uint16_t idx_val=0; 
-                  idx_val < values_per_packet && idx_val + param_idx < layer_sz; 
-                  idx_val++) {
-                    float16_t param_val = ((float16_t*)(&packet.data[6]))[idx_val];
-                    neuralControlBuildNet(net_type, layer_idx, layer_sz, param_idx + idx_val, param_val);   
+                if (netlib_write_layer(&packet.data[1], packet.size-1)) {
+                    DEBUG_PRINT("Error in transfer\n");
                 }
+                break;
+            }
+
+            case NEURALCONTROL_CMD_CONFIG:
+            {
+                cmd_buffer->cmd_id = NEURALCONTROL_CMD_CONFIG;
+                int new_history_size = packet.data[1];
+                int new_obs_level    = packet.data[2];
+                neuralControlConfigure(new_history_size, new_obs_level);
                 break;
             }
 
@@ -690,7 +792,7 @@ static setpoint_t neuralCircleSetpoint(uint32_t iteration) {
 static void neuralControlTask(void *params) {
     DEBUG_PRINT("Neural-Control task main function is running\n");
 
-    neuralControlInitNet();
+    netlib_init_model();
 
     neuralControlComputeSpeedInit();
 
@@ -762,7 +864,6 @@ static void neuralControlTask(void *params) {
                 break;
 
             case NEURALCONTROL_ON_GROUND:
-                //neuralSendDroneState(droneState);
                 if (NEURALCONTROL_CMD_ADJUST == control_cmd.cmd_id)
                     neuralcontrol_state_next = NEURALCONTROL_ADJUSTING;
                 if (NEURALCONTROL_CMD_HOVER == control_cmd.cmd_id)
@@ -773,7 +874,6 @@ static void neuralControlTask(void *params) {
 
             case NEURALCONTROL_TAKE_OFF:
                 netStartTicks = xTaskGetTickCount();
-                //neuralSendDroneState(droneState);
                 new_setpoint = hoverSetpoint;
                 commanderSetSetpoint(&new_setpoint, 5);
                 if (droneState.z > 0.95 && droneState.z < 1.05
@@ -783,7 +883,6 @@ static void neuralControlTask(void *params) {
 
             case NEURALCONTROL_HOVERING:
                 netStartTicks = xTaskGetTickCount();
-                //neuralSendDroneState(droneState);
                 new_setpoint = hoverSetpoint;
                 commanderSetSetpoint(&new_setpoint, 5);
                 if (NEURALCONTROL_CMD_LAND == control_cmd.cmd_id)
@@ -843,11 +942,31 @@ static void neuralControlTask(void *params) {
         if (NEURALCONTROL_ON_GROUND == neuralcontrol_state &&
             NEURALCONTROL_ON_GROUND == neuralcontrol_state_next) {
             // Can be used for Debug stuff ...
+            if (netlib_model.num_layers > 0 && it_count % 100 == 0) {
+                if (it_count % 500 == 0){
+                    DEBUG_PRINT("Reset recurrent memory\n");
+                    netlib_reset_states();
+                } 
+                memset(neuralcontrol_net_input, 0, sizeof(neuralcontrol_net_input));
+                DEBUG_PRINT("input = [");
+                for (int i=0; i<netlib_model.layers[0]->input.numel; i++) {
+                    DEBUG_PRINT("%f,", (double)neuralcontrol_net_input[i]);
+                    if (i%5 == 0) {
+                        vTaskDelay(1);
+                        DEBUG_PRINT("\n");
+                    }
+                }
+                DEBUG_PRINT("]\n");
+                neuralControlComputeNetOutput(lastAction);
+                DEBUG_PRINT("output = [");
+                for (int i=0; i<sizeof(lastAction)/sizeof(lastAction[0]); i++) {
+                    DEBUG_PRINT("%f,",(double)lastAction[i]);
+                }
+                DEBUG_PRINT("]\n");
+            } 
         }
         if (NEURALCONTROL_ON_GROUND == neuralcontrol_state &&
             NEURALCONTROL_EXECUTING == neuralcontrol_state_next) {
-            neuralControlInitNet();
-            neuralControlComputeNetOutput(lastAction);
             neuralSetMotors(
                 lastAction[0],
                 lastAction[1],
@@ -859,13 +978,9 @@ static void neuralControlTask(void *params) {
         }
         if (NEURALCONTROL_HOVERING == neuralcontrol_state &&
             NEURALCONTROL_EXECUTING == neuralcontrol_state_next) {
-            neuralControlInitNet();
-            // Prefill input
-            for (uint16_t i=0; i < NEURALCONTROL_NET_MAX_H; i++) {
-                lastAction[0] = 0.0; lastAction[1] = 0.0; lastAction[2] = 0.0; lastAction[3] = 0.0;
-                neuralCreateDroneState(&kalmanState, lastAction, &droneState);
-                neuralControlUpdateNetInput(droneState, netStartTicks);
-            }
+            // Recurrent memory to zero state
+            netlib_reset_states();
+            // Compute PWM commands            
             neuralControlComputeNetOutput(lastAction);
             neuralSetMotors(
                 lastAction[0],
@@ -932,7 +1047,6 @@ static void neuralControlTask(void *params) {
         if (NEURALCONTROL_ADJUSTING == neuralcontrol_state &&
             NEURALCONTROL_ADJUSTING == neuralcontrol_state_next) {
             // Check Neural net execution time
-            neuralControlInitNet();
             TickType_t beforeInference = xTaskGetTickCount();
             uint16_t infer_ctr;
             float16_t dummy[4];
@@ -941,9 +1055,9 @@ static void neuralControlTask(void *params) {
                 if (((float)xTaskGetTickCount() - beforeInference) / (float)M2T(1) > 5.f)
                     break; // Avoid getting killed by watchdog
             }
-            inferenceTime = ((float)xTaskGetTickCount() - beforeInference) / (float)M2T(1000) / (float)(infer_ctr + 1);
-            DEBUG_PRINT("Avg. Inference Time for %s: %.3f msec.\n", 
-                neuralcontrol_net_names[neuralcontrol_current_net],
+            if (0 == infer_ctr) infer_ctr = 1;
+            inferenceTime = ((float)xTaskGetTickCount() - beforeInference) / (float)M2T(1000) / (float)(infer_ctr);
+            DEBUG_PRINT("Avg. Inference Time: %.3f msec.\n", 
                 (double)inferenceTime * 1000.0);
             if (inferenceTime > neuralcontrol_inference_time + 0.00005f) neuralControlComputeFaster();
             if (inferenceTime < neuralcontrol_inference_time - 0.00005f) neuralControlComputeSlower();
