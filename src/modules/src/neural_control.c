@@ -139,7 +139,8 @@ typedef enum {
     NORMALIZATION   = 0,
     DENSE           = 1,
     LSTM            = 2,
-    ACTIVATION      = 3
+    ACTIVATION      = 3,
+    GRU             = 4,
 } netlib_layer_type_t;
 
 typedef struct {
@@ -195,6 +196,39 @@ static int netlib_layer_inference(netlib_layer_t* layer) {
         }
         break;
 
+        case GRU:
+        {   // parameters [kernel,r_kernel,bias,h_state]
+            int n_in = layer->input.shape[1];
+            int n_out = layer->output.shape[1];
+            int offset = 0;
+            int sz = 3*n_in*n_out;
+            k2c_tensor gru_kernel = 
+              {&((k2c_float*)layer->parameters)[offset],2,sz,{3*n_in,n_out, 1, 1, 1}}; 
+            offset += sz;
+            sz = 3*n_out*n_out;
+            k2c_tensor gru_recurrent_kernel = 
+              {&((k2c_float*)layer->parameters)[offset],2,sz,{3*n_out,n_out, 1, 1, 1}}; 
+            offset += sz;
+            sz = 6*n_out;
+            k2c_tensor gru_bias = 
+              {&((k2c_float*)layer->parameters)[offset],1,sz,{sz, 1, 1, 1, 1}}; 
+            offset += sz;
+            k2c_float* gru_state = &((k2c_float*)layer->parameters)[offset]; 
+            k2c_gru(
+                &(layer->output),
+                &(layer->input),
+                gru_state,
+                &gru_kernel,
+                &gru_recurrent_kernel,
+                &gru_bias,
+                netlib_work_mem,
+                1, 0, 1,
+                k2c_sigmoid,
+                k2c_tanh
+            );
+        }
+        break;
+
         case LSTM:
         {   // parameters [kernel,r_kernel,bias,c_state,h_state]
             int n_in = layer->input.shape[1];
@@ -221,8 +255,7 @@ static int netlib_layer_inference(netlib_layer_t* layer) {
                 &lstm_recurrent_kernel,
                 &lstm_bias,
                 netlib_work_mem, 
-                0,
-                1, 
+                0, 1, 
                 k2c_sigmoid,
                 k2c_tanh); 
 
@@ -923,6 +956,11 @@ static void neuralControlTask(void *params) {
                 neuralSendDroneState(droneState);
                 if (!neuralSafetyCheck(droneState)) {
                     DEBUG_PRINT("Neural control lead to instable behaviour\n");
+                    // Disable engines
+                    //neuralSetMotors(-1,-1,-1,-1);
+                    // Enable PWM bypass
+                    //pwmBypass = 1;
+                    //xQueueOverwrite(pwmBypassQueue, &pwmBypass);
                     neuralcontrol_state_next = NEURALCONTROL_LANDING;
                 }
                 if (NEURALCONTROL_CMD_HOVER == control_cmd.cmd_id)
